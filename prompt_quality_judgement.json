@@ -1,0 +1,234 @@
+{
+  "step": "step10_prompt_quality_judgement",
+  "status": "quality_review_failed",
+  "summary": {
+    "issue_count": 0,
+    "warning_count": 0,
+    "format_failed_count": 0,
+    "quality_failed_count": 0,
+    "field_count": 104,
+    "covered_field_count": 104,
+    "llm_quality_status": "api_error"
+  },
+  "format_checks": [
+    {
+      "id": "prompt_status_success",
+      "category": "format",
+      "severity": "high",
+      "passed": true,
+      "summary": "Prompt generation status is 'success'.",
+      "evidence": [],
+      "recommended_code_action": "Stop downstream code generation unless --allow-needs-review is set."
+    },
+    {
+      "id": "no_validation_errors",
+      "category": "format",
+      "severity": "high",
+      "passed": true,
+      "summary": "Step 9 validation_errors should be empty.",
+      "evidence": [],
+      "recommended_code_action": "Add a preflight validator before extraction agents run."
+    },
+    {
+      "id": "required_modules_present",
+      "category": "format",
+      "severity": "high",
+      "passed": true,
+      "summary": "All required prompt modules should be present.",
+      "evidence": [],
+      "recommended_code_action": "Regenerate Step 9 or add deterministic fallback module builders."
+    },
+    {
+      "id": "all_fields_covered",
+      "category": "format",
+      "severity": "high",
+      "passed": true,
+      "summary": "Every schema field should be covered by a section or figure extraction prompt.",
+      "evidence": [],
+      "recommended_code_action": "Generate coverage tests and fail extraction startup on uncovered fields."
+    },
+    {
+      "id": "expected_execution_order",
+      "category": "format",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Execution order should match the downstream runner order.",
+      "evidence": [
+        "classification",
+        "section_extraction",
+        "figure_extraction",
+        "postprocess_repair"
+      ],
+      "recommended_code_action": "Normalize execution order in the downstream runner."
+    },
+    {
+      "id": "aggregation_contains_prompt_modules",
+      "category": "format",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Aggregated package should expose all downstream prompt families.",
+      "evidence": [],
+      "recommended_code_action": "Make aggregation fallback copy validated module outputs into result.prompt_modules."
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "json_contract",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt texts should include controls for json_contract.",
+      "evidence": {
+        "keywords": [
+          "json",
+          "valid json",
+          "json only"
+        ]
+      },
+      "recommended_code_action": "Add deterministic prompt lint rules and strengthen the prompt template."
+    },
+    {
+      "id": "evidence_provenance",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt texts should include controls for evidence_provenance.",
+      "evidence": {
+        "keywords": [
+          "evidence",
+          "provenance",
+          "source",
+          "quote",
+          "span",
+          "caption",
+          "ocr"
+        ]
+      },
+      "recommended_code_action": "Add deterministic prompt lint rules and strengthen the prompt template."
+    },
+    {
+      "id": "anti_hallucination",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt texts should include controls for anti_hallucination.",
+      "evidence": {
+        "keywords": [
+          "do not invent",
+          "never invent",
+          "hallucination",
+          "unsupported",
+          "missing_reason"
+        ]
+      },
+      "recommended_code_action": "Add deterministic prompt lint rules and strengthen the prompt template."
+    },
+    {
+      "id": "field_path_control",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt texts should include controls for field_path_control.",
+      "evidence": {
+        "keywords": [
+          "field_path",
+          "field paths",
+          "allowed field"
+        ]
+      },
+      "recommended_code_action": "Add deterministic prompt lint rules and strengthen the prompt template."
+    },
+    {
+      "id": "section_ownership",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt texts should include controls for section_ownership.",
+      "evidence": {
+        "keywords": [
+          "section ownership",
+          "owning section",
+          "allowed_sections",
+          "outside this section"
+        ]
+      },
+      "recommended_code_action": "Add deterministic prompt lint rules and strengthen the prompt template."
+    },
+    {
+      "id": "uncertainty_handling",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt texts should include controls for uncertainty_handling.",
+      "evidence": {
+        "keywords": [
+          "confidence",
+          "uncertain",
+          "low-confidence",
+          "missing_reason"
+        ]
+      },
+      "recommended_code_action": "Add deterministic prompt lint rules and strengthen the prompt template."
+    },
+    {
+      "id": "prompt_length_budget",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Generated prompts should stay within a practical length budget.",
+      "evidence": [],
+      "recommended_code_action": "Add prompt compaction before calling downstream extraction agents."
+    },
+    {
+      "id": "non_empty_actionable_prompts",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt fields should contain actionable instructions, not placeholders.",
+      "evidence": [],
+      "recommended_code_action": "Reject prompt modules with empty prompt strings or placeholder output contracts."
+    },
+    {
+      "id": "no_mojibake_text",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Prompt package strings should not look encoding-corrupted.",
+      "evidence": [],
+      "recommended_code_action": "Add an encoding quality gate and keep corrupted source strings out of prompts."
+    },
+    {
+      "id": "repair_prompt_topic_coverage",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Repair prompts should cover JSON, missing fields, ownership, figure conflicts, and provenance.",
+      "evidence": [],
+      "recommended_code_action": "Generate a deterministic repair prompt fallback with required repair types."
+    },
+    {
+      "id": "figure_constraint_quality",
+      "category": "quality",
+      "severity": "medium",
+      "passed": true,
+      "summary": "Figure prompts should enforce allowed categories and ownership boundaries when figure fields exist.",
+      "evidence": {
+        "figure_field_count": 72
+      },
+      "recommended_code_action": "Inject figure_constraint rules into every figure extraction prompt."
+    }
+  ],
+  "issues": [],
+  "warnings": [],
+  "recommendations": [
+    "Prompt package has no high-severity format blockers.",
+    "Persist this judgement file next to the generated code so future runs are reproducible.",
+    "Require downstream agents to emit JSON with evidence spans and missing_reason fields.",
+    "Add a dry-run mode that validates prompt coverage without calling the LLM API."
+  ],
+  "llm_quality_review_error": {
+    "model": "deepseek-v4-pro",
+    "base_url": "https://chat.iphy.ac.cn/litellm/v1",
+    "error": "LiteLLM HTTP error 500: {\"error\":{\"message\":\"litellm.InternalServerError: InternalServerError: Hosted_vllmException - Cannot connect to host 172.16.8.64:8000 ssl:<ssl.SSLContext object at 0x7fa65e7a47d0> [Connect call failed ('172.16.8.64', 8000)]. Received Model Group=deepseek-v4-pro\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"500\"}}"
+  }
+}
