@@ -191,3 +191,205 @@ status
 如果 `status` 是 `needs_review`，先看 `validation_errors`，再回到 `module_outputs` 中定位是哪个模块输出不符合要求。
 
  
+## 后续 Agent 流程说明
+
+前面的 Step 8 负责从论文和需求中设计数据库 section 与 schema；Step 9 负责根据 section/schema 生成下游抽取 prompt。Step 9 之后，目前新增了一个独立的 Step 10，用来判断 prompt 是否可用，并把判断结果交给后续代码生成 Agent。
+
+### Step 9：Prompt Generation Agent
+
+输入文件通常是：
+
+```text
+skyrmion_with_refs_human_gate_fullrerun_postfixed.json
+```
+
+输出文件通常是：
+
+```text
+skyrmion_prompt_generation_output.json
+```
+
+这个 Agent 的作用是把 Step 8 生成的 section/schema 转换成可执行 prompt 包，主要包括：
+
+- 分类 prompt：判断论文片段应该进入哪个抽取模块。
+- section 抽取 prompt：按 section 抽取结构化字段。
+- figure/table/chart 抽取 prompt：处理图、表、曲线、caption、OCR 等证据。
+- postprocess repair prompt：修复 JSON 格式、缺失字段、证据链接和 section ownership 冲突。
+- prompt package aggregation：把所有 prompt 模块整合成一个下游可复用的 prompt 包。
+
+Step 9 的核心输出位置：
+
+```text
+result.prompt_modules
+module_outputs
+validation_errors
+status
+```
+
+其中 `status=success` 且 `validation_errors=[]` 才适合进入后续 Agent。
+
+### Step 10：Prompt Quality Judgement Agent
+
+对应代码：
+
+```text
+code/prompt_quality_code_agent.py
+```
+
+输入：
+
+```text
+skyrmion_prompt_generation_output.json
+```
+
+输出：
+
+```text
+prompt_quality_judgement.json
+```
+
+这个 Agent 分为三层判断。
+
+第一层是本地格式检查 `format_checks`，只判断机器可验证的问题：
+
+- Step 9 的 `status` 是否为 `success`。
+- `validation_errors` 是否为空。
+- 必须的 prompt module 是否齐全。
+- schema 中的 field 是否全部被 prompt 覆盖。
+- `execution_order` 是否正确。
+- 聚合后的 `result.prompt_modules` 是否完整。
+
+第二层是本地质量检查 `quality_checks`，判断 prompt 是否包含基本质量约束：
+
+- 是否要求输出合法 JSON。
+- 是否要求 evidence/provenance/source/span。
+- 是否有 anti-hallucination 约束。
+- 是否限制 `field_path`。
+- 是否保护 section ownership。
+- 是否处理 figure constraint。
+- repair prompt 是否覆盖 JSON、missing field、ownership、figure、provenance。
+- prompt 是否过长、过短或疑似编码损坏。
+
+第三层是 LLM 质量评审智能体，需要加 `--run-quality-review` 才会调用 API。它会主观评估 prompt 质量，并输出：
+
+- `overall_score`
+- `dimension_scores`
+- `quality_findings`
+- `must_fix_before_code_generation`
+- `nice_to_have_improvements`
+- `code_generation_guidance`
+
+这些内容会被合并到 `prompt_quality_judgement.json`，作为后续代码生成 Agent 的依据。
+
+只做本地判断：
+
+```powershell
+python code\prompt_quality_code_agent.py `
+  --prompt-output skyrmion_prompt_generation_output.json `
+  --judgement-output prompt_quality_judgement.json `
+  --judge-only
+```
+
+调用 LLM 质量评审：
+
+```powershell
+$env:CODE_AGENT_API_KEY="your-key"
+python code\prompt_quality_code_agent.py `
+  --prompt-output skyrmion_prompt_generation_output.json `
+  --judgement-output prompt_quality_judgement.json `
+  --judge-only `
+  --run-quality-review `
+  --base-url https://chat.iphy.ac.cn/litellm/v1 `
+  --model kimi-k2.6
+```
+
+目前 API 测试结果：
+
+- `/models` 可用。
+- `kimi-k2.6` 的 `/chat/completions` 可用。
+- `deepseek-v4` 会映射到 `deepseek-v4-pro`，但当前服务端返回 500，原因是后端模型服务不可达。
+
+### Step 11：Code Generation Agent
+
+Step 11 仍然由 `code/prompt_quality_code_agent.py` 触发，但只有在不使用 `--judge-only` 时才会进入。
+
+输入包括：
+
+```text
+skyrmion_prompt_generation_output.json
+prompt_quality_judgement.json
+```
+
+输出：
+
+```text
+code_generation_agent_output.json
+```
+
+它的作用不是直接抽取论文数据，而是根据 Step 10 的判断结果，规划或生成后续代码，例如：
+
+- 下游 extraction runner。
+- prompt package preflight validator。
+- JSON 输出校验器。
+- evidence/provenance 检查器。
+- repair agent runner。
+- 回归测试或 dry-run 检查脚本。
+
+默认情况下，代码生成 Agent 只把生成结果写入 JSON，不会直接覆盖项目原有代码。只有显式添加下面参数时，才会把 LLM 返回的 `generated_files` 写入新目录：
+
+```powershell
+--write-generated-files --generated-output-dir generated_code
+```
+
+完整运行示例：
+
+```powershell
+$env:CODE_AGENT_API_KEY="your-key"
+python code\prompt_quality_code_agent.py `
+  --prompt-output skyrmion_prompt_generation_output.json `
+  --judgement-output prompt_quality_judgement.json `
+  --code-agent-output code_generation_agent_output.json `
+  --run-quality-review `
+  --base-url https://chat.iphy.ac.cn/litellm/v1 `
+  --model kimi-k2.6
+```
+
+如果需要把生成文件落盘：
+
+```powershell
+$env:CODE_AGENT_API_KEY="your-key"
+python code\prompt_quality_code_agent.py `
+  --prompt-output skyrmion_prompt_generation_output.json `
+  --judgement-output prompt_quality_judgement.json `
+  --code-agent-output code_generation_agent_output.json `
+  --run-quality-review `
+  --base-url https://chat.iphy.ac.cn/litellm/v1 `
+  --model kimi-k2.6 `
+  --write-generated-files `
+  --generated-output-dir generated_code
+```
+
+### Step 10 流程图
+
+相关文件：
+
+```text
+step10_prompt_quality_code_agent_flow.md
+step10_prompt_quality_code_agent_flow.svg
+step10_prompt_quality_code_agent_flow.html
+code/render_step10_flowchart.py
+```
+
+重新生成流程图：
+
+```powershell
+python code\render_step10_flowchart.py
+```
+
+建议查看：
+
+```text
+step10_prompt_quality_code_agent_flow.html
+```
+
+这个 HTML 文件包含更直观的泳道流程图，展示从 Step 9 prompt 输出，到本地判断、LLM 质量评审、代码生成 Agent 的完整路径。
