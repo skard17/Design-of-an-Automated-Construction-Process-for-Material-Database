@@ -1,0 +1,28 @@
+# Processing issues
+
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1038_ncomms9813.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1038_s41567-022-01513-2.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1038_s41567-023-02235-9.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1051%2FJPHYSCOL%3A19786161.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1051%2FJPHYSCOL%3A19786167.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1051%2FJPHYSCOL%3A198510154.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1051%2FJPHYSLET%3A019820043023083900.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1051%2FJPHYSLET%3A019850046014064300.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1103_PhysRevB.59.11962.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1103_PhysRevB.66.174521.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1103_PhysRevLett.122.067002.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1103_PHYSREVLETT.56.2513.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1103_PHYSREVLETT.57.238.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1103_PhysRevLett.77.1604.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1103_PhysRevLett.91.187004.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.1134_S0021364024601696.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.12693_aphyspola.118.1031.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.12693_APHYSPOLA.127.306.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.15507_2079-6900.21.201904.507-519.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.21883_ftt.2020.05.49226.25m.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.2221_JCSJ.43.349.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.32732_JMA.2019.8.1.41.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.3329_cujs.v42i1.54236.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.3389_femat.2022.869495.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.4131_JSHPREVIEW.7.595.json :: top-level key 'section2' contains an empty list
+[SKIP] C:/Users/Administrator/Desktop/fsdownload/sc-ie/IE_4_preprocess2(s2)/inputs/s2/10.4236_WJCMP.2014.41006.json :: top-level key 'section2' contains an empty list

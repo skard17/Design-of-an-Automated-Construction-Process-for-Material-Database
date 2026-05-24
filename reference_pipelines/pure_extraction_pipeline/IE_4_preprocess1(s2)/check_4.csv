@@ -1,0 +1,357 @@
+filename,entry_id,only_in_section2_1,only_in_section2_2
+10.1002_adma.202520724.json,1,"['deposition_duration', 'laser_energy', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'laser_fluence', 'post_annealing_conditions']"
+10.1002_pssa.200982233.json,1,[],['fabrication_method']
+10.1007_S10948-012-2057-4.json,1,[],['fabrication_method']
+10.1007_s00723-023-01606-y.json,1,[],['encapsulation']
+10.1007_s10854-020-04476-3.json,1,['starting_composition'],"['dopant', 'fabrication_method', 'starting_material']"
+10.1007_s10854-020-04476-3.json,2,"['annealing_conditions', 'atmosphere']","['annealing_atmosphere', 'annealing_temperature', 'annealing_time']"
+10.1007_s10854-024-13243-7.json,1,"['deposition_duration', 'deposition_gas', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'laser_type', 'post_annealing_conditions']"
+10.1007_s10854-024-13243-7.json,3,['solvents'],['solvent']
+10.1007_s10948-011-1339-6.json,1,[],['precursor_materials']
+10.1007_s10948-016-3846-y.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas', 'energy_source_parameters', 'post_treatment']","['chamber_base_pressure', 'deposition_atmosphere', 'deposition_time', 'fabrication_method', 'post_annealing_conditions', 'power']"
+10.1007_s10948-022-06209-5.json,1,[],"['milling_conditions', 'mixing_conditions', 'starting_materials']"
+10.1007_s10948-022-06286-6.json,1,[],['fabrication_method']
+10.1007_s10948-024-06691-z.json,1,['crucible_material'],[]
+10.1007_s10948-024-06745-2.json,1,[],['starting_materials']
+10.1007_s10948-025-06950-7.json,1,"['deposition_gas', 'laser_energy', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'laser_fluence', 'post_annealing_conditions', 'substrate']"
+10.1007_s10971-025-07063-2.json,1,"['annealing_conditions', 'calcination_conditions', 'sintering_conditions']","['annealing_atmosphere', 'annealing_temperature', 'annealing_time', 'calcination_cycles', 'calcination_temperature', 'calcination_time', 'fabrication_method', 'sintering_temperature', 'sintering_time', 'starting_materials']"
+10.1007_s11467-021-1076-7.json,1,[],"['atmosphere', 'pelletizing', 'starting_materials']"
+10.1007_s40145-015-0173-x.json,1,['encapsulation'],[]
+10.1007_s40145-016-0189-x.json,1,[],"['fabrication_method', 'starting_materials']"
+10.1007_s40534-014-0034-2.json,1,[],"['additive', 'final_cation_concentration', 'solvent', 'starting_material', 'substrate']"
+10.1007_s44214-023-00034-0.json,2,[],"['deposition_temperature', 'film_thickness']"
+10.1007_s44214-025-00090-8.json,1,[],['fabrication_method']
+10.1016_S0921-4526(96)00724-7.json,1,[],"['atmosphere', 'heating_method', 'post_processing']"
+10.1016_S0921-4534(00)00898-4.json,1,[],"['irradiation_facility', 'irradiation_source', 'matching_field', 'starting_material']"
+10.1016_j.matchemphys.2019.122075.json,1,"['base_pressure', 'deposition_gas', 'target_substrate_distance']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method', 'substrate', 'target_material', 'target_power', 'target_to_substrate_distance']"
+10.1016_j.physc.2007.05.050.json,2,[],['fabrication_method']
+10.1016_j.ssc.2018.05.010.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas', 'energy_source_parameters']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method', 'sputtering_power', 'substrate', 'target']"
+10.1016_j.tsf.2020.138232.json,1,[],['fabrication_method']
+10.1021_acs.cgd.3c00768.json,1,[],"['deposition_atmosphere', 'fabrication_method']"
+10.1021_acs.nanolett.9b01693.json,1,[],"['fabrication_method', 'film_orientation', 'film_thickness', 'substrate']"
+10.1021_acs.nanolett.9b01693.json,2,[],"['equipment', 'patterning_method']"
+10.1021_acs.nanolett.9b03153.json,1,['deposition_duration'],['fabrication_method']
+10.1021_acsami.9b18820.json,1,['deposition_duration'],"['deposition_time', 'fabrication_method', 'substrate']"
+10.1021_acsami.9b18820.json,2,"['base_pressure', 'deposition_gas']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method']"
+10.1038%2Fs41467-022-30912-5.json,1,"['deposition_duration', 'deposition_gas']","['deposition_atmosphere', 'deposition_time', 'fabrication_method']"
+10.1038%2Fs41467-022-30912-5.json,2,['calcination_conditions'],[]
+10.1038_AM.2017.197.json,1,['post_treatment'],[]
+10.1038_S41535-017-0050-7.json,1,[],"['fabrication_method', 'solvent', 'starting_material']"
+10.1038_ncomms13036.json,1,['post_treatment'],"['buffer_layer', 'fabrication_method', 'film_thickness', 'substrate']"
+10.1038_ncomms7573.json,1,['base_pressure'],"['chamber_base_pressure', 'fabrication_method']"
+10.1038_ncomms8927.json,1,[],"['crucible_material', 'starting_material']"
+10.1038_ncomms9586.json,1,['chamber_base_pressure'],"['deposition_atmosphere', 'deposition_pressure', 'fabrication_method']"
+10.1038_nnano.2016.63.json,1,[],"['fabrication_method', 'substrate']"
+10.1038_npjquantmats.2016.14.json,1,[],"['product', 'starting_material']"
+10.1038_s41427-024-00561-9.json,1,['base_pressure'],"['chamber_base_pressure', 'fabrication_method']"
+10.1038_s41427-024-00564-6.json,1,['deposition_duration'],"['fabrication_method', 'film_thickness', 'substrate']"
+10.1038_s41427-024-00564-6.json,2,['deposition_duration'],"['fabrication_method', 'film_thickness', 'substrate']"
+10.1038_s41467-017-02104-z.json,1,[],['starting_material']
+10.1038_s41467-019-10552-y.json,1,[],['starting_composition']
+10.1038_s41467-020-18438-0.json,1,[],"['geometry', 'starting_material']"
+10.1038_s41467-021-23976-2.json,1,['cooling_rate'],[]
+10.1038_s41467-021-26201-2.json,1,[],['fabrication_method']
+10.1038_s41467-023-36203-x.json,1,[],['fabrication_method']
+10.1038_s41467-023-36208-6.json,2,[],"['starting_material', 'substrate']"
+10.1038_s41467-024-46133-x.json,1,[],"['melting_method', 'starting_materials']"
+10.1038_s41467-024-46133-x.json,2,"['cooling_rate', 'heating_rate', 'starting_composition']",['starting_materials']
+10.1038_s41467-024-54660-w.json,1,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method', 'laser_type', 'substrate', 'target']"
+10.1038_s41467-024-54660-w.json,2,[],"['mixing', 'starting_materials']"
+10.1038_s41467-025-62624-x.json,1,[],['starting_materials']
+10.1038_s41467-025-65123-1.json,3,['patterning_method'],[]
+10.1038_s41535-018-0140-1.json,1,[],"['flux_method', 'starting_material']"
+10.1038_s41535-020-00279-1.json,1,[],"['fabrication_method', 'starting_materials']"
+10.1038_s41535-020-00279-1.json,2,[],"['fabrication_method', 'starting_materials']"
+10.1038_s41535-020-00279-1.json,3,"['atmosphere', 'sintering_conditions']","['fabrication_method', 'sintering_atmosphere', 'sintering_temperature', 'sintering_time', 'starting_materials']"
+10.1038_s41535-020-0225-5.json,1,[],['fabrication_method']
+10.1038_s41563-024-01952-7.json,1,['deposition_duration'],"['fabrication_method', 'film_thickness', 'substrate']"
+10.1038_s41586-024-07635-2.json,1,[],"['post_treatment', 'starting_materials']"
+10.1038_s41586-025-10095-x.json,1,[],['fabrication_method']
+10.1038_s41598-017-01967-y.json,1,[],"['final_temperature', 'starting_materials']"
+10.1038_s41598-017-03408-2.json,1,[],"['crucible_material', 'melting_temperature', 'melting_time', 'quenching_method', 'starting_material']"
+10.1038_s41598-017-13303-5.json,1,[],['flux_method']
+10.1038_s41598-017-13913-z.json,1,[],['fabrication_method']
+10.1038_s41598-018-22451-1.json,1,[],['fabrication_method']
+10.1038_s41598-018-26032-0.json,1,[],"['fabrication_method', 'starting_material']"
+10.1038_s41598-018-31295-8.json,1,[],['starting_materials']
+10.1038_s41598-019-42699-5.json,1,[],['fabrication_method']
+10.1038_s41598-019-52973-1.json,1,[],['fabrication_method']
+10.1038_s41598-020-61666-z.json,1,['crucible_material'],"['cooling_method', 'fabrication_method', 'starting_materials']"
+10.1038_s41598-021-83411-w.json,1,[],['starting_material']
+10.1038_s41598-021-85304-4.json,1,[],['starting_materials']
+10.1038_s41598-021-85304-4.json,2,[],['starting_materials']
+10.1038_s41598-021-85304-4.json,3,['target_substrate_distance'],"['fabrication_method', 'target_to_substrate_distance']"
+10.1038_s41598-022-24520-y.json,1,[],"['doping_levels', 'fabrication_method', 'starting_material']"
+10.1038_s41598-023-36473-x.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas', 'target_substrate_distance']","['chamber_base_pressure', 'deposition_atmosphere', 'deposition_time', 'fabrication_method', 'target_to_substrate_distance']"
+10.1038_s41598-024-73207-z.json,1,"['deposition_duration', 'deposition_gas', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions']"
+10.1038_s41598-025-21316-8.json,1,"['base_pressure', 'deposition_gas']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method']"
+10.1038_s41699-021-00210-7.json,1,['base_pressure'],"['chamber_base_pressure', 'fabrication_method', 'substrate', 'target_material']"
+10.1038_s41699-021-00210-7.json,2,[],"['fabrication_method', 'precursor_material', 'precursor_temperature', 'substrate']"
+10.1038_s42005-021-00663-8.json,1,[],['fabrication_method']
+10.1038_s42005-023-01496-3.json,1,[],['fabrication_method']
+10.1038_s42005-024-01644-3.json,1,"['post_treatment', 'target_substrate_distance']","['deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions', 'target_to_substrate_distance']"
+10.1038_s43246-020-0026-1.json,1,"['deposition_duration', 'deposition_gas', 'post_treatment', 'target_substrate_distance']","['deposition_atmosphere', 'deposition_time', 'fabrication_method', 'post_annealing_conditions', 'target_to_substrate_distance']"
+10.1038_srep02235.json,2,['calcination_conditions'],[]
+10.1038_srep04265.json,1,[],"['final_product', 'starting_materials', 'synthesis_details']"
+10.1038_srep17363.json,1,"['base_pressure', 'deposition_duration']","['chamber_base_pressure', 'deposition_time', 'fabrication_method']"
+10.1038_srep20436.json,1,[],"['fabrication_method', 'starting_material', 'substrate']"
+10.1038_srep31077.json,1,[],"['fabrication_method', 'solution', 'starting_material']"
+10.1038_srep31824.json,1,[],"['purity', 'starting_materials']"
+10.1038_srep33457.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas', 'post_treatment', 'substrate_temperature']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions', 'substrate']"
+10.1038_srep34140.json,1,"['atmosphere', 'deposition_duration']","['deposition_atmosphere', 'fabrication_method']"
+10.1039_c9na00147f.json,1,[],"['fabrication_method', 'source_materials', 'substrate']"
+10.1039_d0na00456a.json,1,[],['starting_material']
+10.1039_d0na00456a.json,2,[],['substrate']
+10.1039_d4sc03399j.json,1,['precursor_preparation'],"['atmosphere', 'starting_materials']"
+10.1051%2FE3SCONF%2F202122901014.json,1,"['deposition_gas', 'post_treatment', 'target_substrate_distance']","['deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions', 'target_to_substrate_distance']"
+10.1051%2FEPJCONF%2F20134103010.json,1,[],"['fabrication_method', 'film_thickness', 'substrate']"
+10.1051%2FEPJCONF%2F201920102001.json,1,[],['starting_material']
+10.1051%2FEPJCONF%2F201920102001.json,2,[],['starting_material']
+10.1051%2FJP4%3A1993853.json,1,[],"['crystal_growth_method', 'oxygenation_conditions', 'sample_mass', 'starting_material']"
+10.1051%2FJP4%3A1996338.json,1,['deposition_duration'],"['fabrication_method', 'starting_material', 'substrate']"
+10.1051%2FJPHYS%3A01971003204034900.json,1,[],"['post_processing', 'starting_material']"
+10.1051%2FJPHYS%3A01988004905079500.json,1,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.1051%2FJPHYSCOL%3A19786202.json,1,[],['fabrication_method']
+10.1051%2FJPHYSCOL%3A19808188.json,1,['deposition_duration'],['fabrication_method']
+10.1051%2FJPHYSCOL%3A19888944.json,1,[],['starting_material']
+10.1051%2FJPHYSCOL%3A1995543.json,1,[],['fabrication_method']
+10.1051%2FJPHYSCOL%3A1995543.json,2,[],['fabrication_method']
+10.1051%2FJPHYSCOL%3A1995545.json,1,[],['fabrication_method']
+10.1051%2FJPHYSCOL%3A1995545.json,2,[],['fabrication_method']
+10.1051%2FJPHYSCOL%3A1995549.json,1,[],['fabrication_method']
+10.1051%2FJPHYSLET%3A019750036011027100.json,1,[],"['crucible_material', 'deposition_atmosphere', 'fabrication_method', 'source_material', 'substrate']"
+10.1051%2FJPHYSLET%3A019810042013031300.json,1,[],['fabrication_method']
+10.1051%2FJPHYSLET%3A019810042019044500.json,1,[],"['fabrication_method', 'film_thickness', 'target_material']"
+10.1051%2FJPHYSLET%3A019810042019044500.json,2,[],"['fabrication_method', 'target_material']"
+10.1051%2FJPHYSLET%3A01982004305014700.json,1,[],"['solvent', 'starting_material', 'substrate']"
+10.1051%2FRPHYSAP%3A01985002007045700.json,1,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.1051%2FRPHYSAP%3A01989002405048500.json,1,[],['starting_materials']
+10.1051%2FRPHYSAP%3A01989002405048500.json,2,[],['starting_materials']
+10.1051%2Fe3sconf%2F202669204001.json,4,['applied_pressure'],[]
+10.1063_1.112100.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas']","['chamber_base_pressure', 'deposition_atmosphere', 'deposition_time', 'fabrication_method']"
+10.1063_1.1355327.json,1,[],['fabrication_method']
+10.1063_1.2409368.json,1,[],"['sintering_atmosphere', 'starting_materials']"
+10.1063_1.350161.json,1,[],"['crucible_material', 'starting_material']"
+10.1063_1.4890085.json,1,['deposition_duration'],"['fabrication_method', 'substrate']"
+10.1073_pnas.1713916115.json,1,['post_treatment'],"['fabrication_method', 'post_annealing_conditions', 'substrate']"
+10.1073_pnas.1713916115.json,2,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.1088%2F0031-8949%2F1992%2FT42%2F009.json,1,[],"['deposition_atmosphere', 'fabrication_method']"
+10.1088%2F0953-2048%2F19%2F11%2F006.json,1,[],"['fabrication_method', 'substrate']"
+10.1088%2F0953-2048%2F21%2F12%2F125002.json,1,[],"['geometry', 'starting_material']"
+10.1088%2F0953-2048%2F21%2F12%2F125002.json,2,[],"['geometry', 'starting_material']"
+10.1088%2F0953-2048%2F24%2F12%2F125010.json,1,['spin_coating_parameters'],"['coating_method', 'fabrication_method', 'substrate']"
+10.1088%2F0953-2048%2F26%2F1%2F015001.json,1,['solution_concentration'],['starting_material']
+10.1088%2F0953-2048%2F28%2F1%2F015001.json,1,[],['fabrication_method']
+10.1088%2F0953-8984%2F26%2F18%2F185701.json,1,[],"['crucible_type', 'starting_materials']"
+10.1088%2F0953-8984%2F8%2F45%2F013.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas', 'post_treatment']","['chamber_base_pressure', 'deposition_atmosphere', 'deposition_time', 'fabrication_method', 'post_annealing_conditions']"
+10.1088%2F1361-648X%2Faa88fb.json,1,[],['starting_material']
+10.1088%2F1361-648X%2Fad82c9.json,1,[],"['cooling_rate', 'flux_method', 'starting_materials']"
+10.1088%2F1361-6668%2Fad8122.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method', 'substrate_temperature']"
+10.1088%2F1361-6668%2Fad9d83.json,1,"['calcination_conditions', 'sintering_conditions']",[]
+10.1088%2F1361-6668%2Fad9d83.json,2,"['calcination_conditions', 'sintering_conditions']",[]
+10.1088%2F1361-6668%2Fae0fc6.json,1,"['base_pressure', 'deposition_duration', 'target_substrate_distance']","['chamber_base_pressure', 'deposition_time', 'fabrication_method', 'target_to_substrate_distance']"
+10.1088%2F1361-6668%2Fae3f10.json,1,"['base_pressure', 'deposition_duration', 'deposition_gas', 'target_substrate_distance']","['chamber_base_pressure', 'deposition_atmosphere', 'deposition_time', 'fabrication_method', 'target_to_substrate_distance']"
+10.1088%2F1402-4896%2Fad8380.json,1,"['base_pressure', 'deposition_gas', 'post_treatment']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions']"
+10.1088%2F1674-1056%2F21%2F7%2F077401.json,1,['deposition_duration'],"['fabrication_method', 'substrate']"
+10.1088%2F1674-1056%2F21%2F7%2F077401.json,2,[],['etching_method']
+10.1088%2F1674-1056%2Faca3a2.json,1,[],"['fabrication_method', 'starting_materials']"
+10.1103%2FPHYSREVLETT.70.1525.json,1,[],['fabrication_method']
+10.1103_2nsw-n8gf.json,1,"['calcination_conditions', 'sintering_conditions']",[]
+10.1103_7hhv-9fq7.json,1,['post_treatment'],['fabrication_method']
+10.1103_PHYSREVB.31.1654.json,1,[],"['crucible_type', 'fabrication_method']"
+10.1103_PHYSREVB.37.5132.json,1,[],['starting_materials']
+10.1103_PHYSREVB.39.7371.json,1,[],"['fabrication_method', 'post_processing', 'sintering_conditions']"
+10.1103_PHYSREVB.45.10544.json,1,[],"['atmosphere', 'cooling_condition', 'fabrication_method', 'starting_materials']"
+10.1103_PHYSREVB.45.10544.json,2,[],"['flux_material', 'orientation', 'starting_materials']"
+10.1103_PHYSREVB.47.11595.json,1,[],['fabrication_method']
+10.1103_PHYSREVB.52.9727.json,1,[],"['cold_deformation', 'container', 'fabrication_method', 'rolling', 'starting_material']"
+10.1103_PHYSREVB.76.094508.json,1,"['deposition_gas', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions']"
+10.1103_PHYSREVB.81.184530.json,1,['solution_concentration'],[]
+10.1103_PHYSREVB.81.184530.json,2,['spin_coating_parameters'],[]
+10.1103_PHYSREVB.84.214529.json,1,['deposition_duration'],"['fabrication_method', 'substrate']"
+10.1103_PHYSREVLETT.102.207002.json,1,[],['fabrication_method']
+10.1103_PHYSREVLETT.114.077002.json,2,[],['fabrication_method']
+10.1103_PHYSREVLETT.55.1319.json,1,[],"['product_form', 'starting_material']"
+10.1103_PHYSREVLETT.55.2479.json,1,[],"['crystal_dimensions', 'crystal_form', 'crystal_growth_method', 'crystal_orientation', 'starting_material']"
+10.1103_PHYSREVLETT.55.2479.json,2,[],"['fabrication_method', 'film_form', 'target_material']"
+10.1103_PHYSREVLETT.57.1255.json,1,[],['melting_method']
+10.1103_PHYSREVLETT.66.2830.json,2,[],"['doping_source', 'fabrication_method']"
+10.1103_PHYSREVLETT.71.3862.json,1,[],"['flux_method', 'starting_material']"
+10.1103_PHYSREVLETT.75.3586.json,1,[],['starting_material']
+10.1103_PHYSREVLETT.75.4122.json,1,[],['starting_material']
+10.1103_PHYSREVLETT.75.4520.json,1,[],['fabrication_method']
+10.1103_PHYSREVLETT.76.4951.json,1,[],['starting_material']
+10.1103_PhysRevB.49.13271.json,1,[],"['fabrication_method', 'substrate', 'target']"
+10.1103_PhysRevB.49.6185.json,1,"['deposition_gas', 'deposition_pressure', 'substrate_temperature']","['fabrication_method', 'film_orientation', 'film_thickness', 'substrate', 'substrate_thickness']"
+10.1103_PhysRevB.50.3384.json,1,[],"['fabrication_method', 'film_orientation', 'substrate']"
+10.1103_PhysRevB.67.174511.json,1,[],['fabrication_method']
+10.1103_PhysRevB.69.180511.json,1,[],"['crystal_dimension', 'crystal_orientation', 'crystal_structure', 'flux_method', 'starting_material']"
+10.1103_PhysRevB.80.220505.json,1,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.1103_PhysRevB.92.195135.json,1,[],['fabrication_method']
+10.1103_PhysRevB.96.184517.json,1,[],"['fabrication_method', 'target_material']"
+10.1103_PhysRevB.99.094204.json,1,"['deposition_duration', 'deposition_gas']","['deposition_pressure', 'fabrication_method', 'substrate_temperature', 'target_material']"
+10.1103_PhysRevLett.107.207001.json,1,[],"['fabrication_method', 'substrate']"
+10.1103_PhysRevLett.122.027001.json,1,[],"['deposition_thickness', 'fabrication_method']"
+10.1103_PhysRevLett.122.027001.json,2,"['sintering_conditions', 'starting_composition']","['heating_method', 'sintering_pressure', 'sintering_temperature', 'sintering_time', 'starting_material']"
+10.1103_PhysRevLett.93.097001.json,1,[],['fabrication_method']
+10.1103_physrevlett.132.066001.json,1,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.1103_physrevlett.132.066001.json,2,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.1109_77.783635.json,5,[],"['contact_adjustment', 'junction_fabrication_method', 'measurement_temperature', 'tip_material']"
+10.1109_77.784925.json,1,"['deposition_gas', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions']"
+10.1109_TASC.2023.3340641.json,1,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.1109_jphot.2019.2910668.json,1,[],"['fabrication_method', 'substrate', 'substrate_temperature']"
+10.1126_science.aaa9733.json,1,[],"['flux_material', 'starting_material']"
+10.1139_cjp-2015-0173.json,1,[],"['flux_material', 'starting_materials']"
+10.1143_JPSJ.77.114704.json,1,[],"['sample_dimensions', 'starting_material']"
+10.1143_jpsj.80.093701.json,1,[],['flux_method']
+10.1186_s11671-015-1124-8.json,1,[],['fabrication_method']
+10.1209%2Fepl%2Fi1996-00314-9.json,1,[],"['fabrication_method', 'substrate']"
+10.12693_APHYSPOLA.114.179.json,1,['post_treatment'],"['fabrication_method', 'post_annealing_conditions']"
+10.12693_APHYSPOLA.118.1026.json,1,[],['fabrication_method']
+10.12693_APHYSPOLA.118.389.json,1,[],['fabrication_method']
+10.12693_APHYSPOLA.121.1059.json,1,[],['fabrication_method']
+10.12693_APHYSPOLA.121.805.json,1,[],['fabrication_method']
+10.12693_APHYSPOLA.126.A-88.json,1,[],['fabrication_method']
+10.12693_APHYSPOLA.131.1018.json,1,"['deposition_duration', 'deposition_gas', 'post_treatment', 'target_substrate_distance']","['deposition_atmosphere', 'deposition_time', 'fabrication_method', 'post_annealing_conditions', 'target_to_substrate_distance']"
+10.12693_APHYSPOLA.134.1066.json,1,[],['fabrication_method']
+10.12693_APHYSPOLA.96.245.json,1,[],['fabrication_method']
+10.12693_APhysPolA.91.597.json,1,[],"['fabrication_method', 'heating_method']"
+10.12693_aphyspola.117.27.json,1,[],['fabrication_method']
+10.12693_aphyspola.118.319.json,1,[],['fabrication_method']
+10.12693_aphyspola.118.373.json,1,['encapsulation'],[]
+10.12693_aphyspola.118.383.json,1,[],"['coating_method', 'starting_materials', 'substrate']"
+10.12693_aphyspola.118.399.json,1,[],['fabrication_method']
+10.12693_aphyspola.119.180.json,1,[],"['fabrication_method', 'substrate']"
+10.12693_aphyspola.126.a-123.json,1,[],"['fabrication_method', 'substrate', 'substrate_temperature']"
+10.12693_aphyspola.130.593.json,1,[],"['atmosphere', 'fabrication_method', 'post_heat_treatment', 'remelting', 'starting_materials']"
+10.12693_aphyspola.131.1450.json,1,[],"['product', 'starting_materials']"
+10.12693_aphyspola.140.40.json,1,[],"['mixing_conditions', 'post_processing', 'starting_materials']"
+10.12693_aphyspola.140.40.json,2,[],"['additives', 'initial_composition', 'mixing_conditions', 'pellet_pressing', 'seed_crystal', 'starting_materials', 'temperature_profile']"
+10.12693_aphyspola.143.134.json,1,[],['starting_materials']
+10.12693_aphyspola.143.134.json,2,[],['fabrication_method']
+10.12693_aphyspola.144.247.json,1,"['autoclave_conditions', 'drying_conditions']",['starting_material']
+10.1299_KIKAIA.61.1858.json,1,[],"['calcination_atmosphere', 'starting_material_purity', 'starting_materials']"
+10.1299_KIKAIA.61.1858.json,2,['atmosphere'],['sintering_atmosphere']
+10.1360_N972017-00706.json,1,[],['fabrication_method']
+10.1380_JSSSJ.37.541.json,1,['post_treatment'],"['fabrication_method', 'post_annealing_conditions']"
+10.1515_MSP-2016-0077.json,1,"['pyrolysis_conditions', 'solution_concentration']",[]
+10.1541_IEEJFMS.123.132.json,3,"['deposition_duration', 'deposition_pressure', 'laser_energy', 'laser_frequency', 'substrate_temperature', 'target_substrate_distance']",[]
+10.1541_IEEJFMS.123.132.json,4,"['deposition_duration', 'deposition_pressure', 'laser_energy', 'laser_frequency', 'target_substrate_distance']",[]
+10.1541_IEEJFMS1990.115.3_157.json,1,[],['fabrication_method']
+10.1541_IEEJFMS1990.115.3_157.json,2,[],['fabrication_method']
+10.1541_IEEJFMS1990.115.3_157.json,3,[],['fabrication_method']
+10.1541_IEEJFMS1990.118.4_408.json,1,"['base_pressure', 'deposition_gas']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method']"
+10.15541_jim20190001.json,1,[],['fabrication_method']
+10.1590_S0103-97332006000600081.json,1,[],['starting_materials']
+10.17485%2Fijst%2F2014%2Fv7i2.4.json,1,['annealing_conditions'],['starting_material']
+10.17485%2Fijst%2F2014%2Fv7i2.4.json,2,[],['starting_material']
+10.17576_jsm-2018-4708-32.json,1,[],"['sintering_atmosphere', 'starting_materials']"
+10.17576_jsm-2022-5101-26.json,1,[],['starting_materials']
+10.2109_JCERSJ.101.630.json,1,[],"['fabrication_method', 'starting_material']"
+10.2109_JCERSJ.104.926.json,1,['deposition_gas'],"['deposition_atmosphere', 'deposition_gas_flow_rate', 'fabrication_method', 'starting_materials', 'substrate']"
+10.2109_JCERSJ.96.345.json,1,['calcination_conditions'],[]
+10.2109_JCERSJ.96.350.json,1,['encapsulation'],"['mixing_conditions', 'post_calcination_processing', 'pressing_conditions', 'sintering_atmosphere', 'starting_materials']"
+10.2109_JCERSJ.96.367.json,1,[],"['melting_temperature', 'melting_time', 'quenching_method', 'starting_materials']"
+10.2109_JCERSJ.96.401.json,1,[],"['mixing_method', 'starting_materials']"
+10.2109_JCERSJ.97.1428.json,1,"['calcination_conditions', 'encapsulation']",[]
+10.21203%2FRS.3.RS-173918%2FV1.json,2,['post_treatment'],['post_annealing_conditions']
+10.21203%2FRS.3.RS-184874%2FV1.json,1,[],['fabrication_method']
+10.21203%2FRS.3.RS-404809%2FV1.json,1,[],['starting_materials']
+10.21203%2Frs.3.rs-1126263%2Fv1.json,1,['heating_rate'],[]
+10.21203%2Frs.3.rs-1138719%2Fv1.json,1,['spin_coating_parameters'],"['deposition_method', 'fabrication_method', 'precursor_type', 'substrate']"
+10.2172_6160055.json,2,[],['quenching_method']
+10.21779_2542-0321-2020-35-4-79-89.json,1,[],['fabrication_method']
+10.21883_FTT.2019.09.48091.11N.json,1,['deposition_duration'],"['fabrication_method', 'substrate']"
+10.21883_ftt.2017.02.44038.171.json,1,[],"['mixing_equipment', 'starting_materials']"
+10.21883_ftt.2020.09.49760.10h.json,1,"['deposition_duration', 'deposition_gas']","['deposition_atmosphere', 'deposition_time', 'fabrication_method', 'target_composition']"
+10.21883_ftt.2020.09.49766.33h.json,1,[],"['fabrication_method', 'substrate']"
+10.21883_ftt.2020.09.49766.33h.json,3,[],"['fabrication_method', 'target_material']"
+10.21883_ftt.2022.09.52800.01hh.json,1,['deposition_duration'],"['fabrication_method', 'substrate']"
+10.21883_ftt.2022.09.52800.01hh.json,3,['deposition_duration'],['fabrication_method']
+10.21883_ftt.2023.06.55642.23h.json,3,['deposition_duration'],[]
+10.21883_jtf.2020.10.49799.313-19.json,1,['deposition_duration'],['fabrication_method']
+10.21883_jtf.2020.10.49799.313-19.json,2,['energy_source_parameters'],"['fabrication_method', 'laser_wavelength']"
+10.21883_pss.2022.09.54145.01hh.json,1,['deposition_duration'],"['fabrication_method', 'film_thickness', 'substrate']"
+10.21883_pss.2022.09.54145.01hh.json,2,[],['mask_removal']
+10.2221_JCSJ.23.96.json,1,"['deposition_gas', 'target_substrate_distance']","['deposition_atmosphere', 'fabrication_method', 'target_to_substrate_distance']"
+10.2221_JCSJ.26.281.json,1,[],['fabrication_method']
+10.2221_JCSJ.35.523.json,1,[],"['geometry', 'sample_description']"
+10.2221_JCSJ.38.589.json,1,[],"['coagulation_bath', 'solvent', 'starting_material']"
+10.2221_JCSJ.40.473.json,1,"['base_pressure', 'deposition_gas']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method']"
+10.2221_JCSJ.40.558.json,1,"['deposition_gas', 'laser_energy', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'laser_type', 'laser_wavelength', 'post_annealing_conditions']"
+10.2221_JCSJ.41.505.json,1,[],['fabrication_method']
+10.2221_JCSJ.44.523.json,1,[],['fabrication_method']
+10.2221_JCSJ.44.579.json,1,[],"['fabrication_method', 'gas_flow_rate']"
+10.2221_jcsj.40.516.json,1,"['base_pressure', 'deposition_duration']","['chamber_base_pressure', 'fabrication_method', 'film_thickness']"
+10.2221_jcsj.40.516.json,2,"['base_pressure', 'deposition_duration', 'deposition_gas']","['chamber_base_pressure', 'deposition_atmosphere', 'deposition_pressure', 'deposition_time', 'fabrication_method', 'film_thickness']"
+10.2221_jcsj.47.103.json,1,"['base_pressure', 'deposition_duration', 'post_treatment']","['chamber_base_pressure', 'deposition_time', 'fabrication_method', 'film_thickness', 'post_annealing_conditions', 'protective_layer', 'substrate', 'substrate_rotation_speed']"
+10.2221_jcsj.48.304.json,1,"['deposition_gas', 'post_treatment', 'target_substrate_distance']","['deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions', 'target_to_substrate_distance']"
+10.2221_jcsj.49.139.json,1,['post_treatment'],"['fabrication_method', 'film_thickness', 'substrate']"
+10.2320_JINSTMET.74.444.json,1,['encapsulation'],[]
+10.2320_JINSTMET1952.64.9_727.json,1,[],"['deposition_thickness', 'fabrication_method']"
+10.2320_JINSTMET1952.64.9_727.json,4,[],"['deposition_thickness', 'fabrication_method']"
+10.2320_JINSTMET1952.64.9_727.json,5,[],['flux_material']
+10.2320_JINSTMET1952.66.4_289.json,1,[],['calcination_atmosphere']
+10.2320_JINSTMET1952.66.4_289.json,2,[],"['fabrication_method', 'film_thickness']"
+10.2320_MATERTRANS1989.37.902.json,1,[],['fabrication_method']
+10.2320_jinstmet.ja201905.json,1,[],['fabrication_method']
+10.2320_jinstmet.ja201905.json,2,[],['fabrication_method']
+10.2478_msp-2021-0005.json,1,[],['starting_materials']
+10.2478_msp-2021-0005.json,2,[],['starting_materials']
+10.2497_JJSPM.35.333.json,1,[],['starting_materials']
+10.2497_JJSPM.35.821.json,1,[],['starting_materials']
+10.2497_JJSPM.36.579.json,1,[],['fabrication_method']
+10.2497_JJSPM.37.734.json,1,['starting_composition'],"['pellet_dimensions', 'pressing_pressure', 'sintering_atmosphere', 'starting_materials']"
+10.2497_JJSPM.37.807.json,1,[],"['grinding_conditions', 'starting_materials']"
+10.2497_JJSPM.38.1019.json,1,['deposition_gas'],"['deposition_atmosphere', 'fabrication_method']"
+10.2497_JJSPM.39.349.json,1,[],['starting_materials']
+10.24996_ijs.2021.62.9.9.json,1,['cooling_rate'],[]
+10.25073%2F2588-1124%2Fvnumap.5022.json,1,[],"['fabrication_method', 'substrate']"
+10.2978_JSAS.4.131.json,1,[],['fabrication_method']
+10.2978_JSAS.4.171.json,1,['deposition_gas'],"['fabrication_method', 'substrate']"
+10.2978_jsas.4.58.json,2,[],"['fabrication_method', 'substrate_temperature']"
+10.2991_AME-16.2016.95.json,1,[],['fabrication_method']
+10.30526_33.1.2372.json,1,['calcination_conditions'],[]
+10.30526_33.1.2372.json,2,['drying_conditions'],[]
+10.30970_jps.02.258.json,1,[],"['fabrication_method', 'seed_layer', 'substrate']"
+10.32508_stdj.v14i2.1903.json,1,[],"['product_composition', 'starting_materials']"
+10.3329%2FJSR.V4I2.9653.json,1,"['deposition_gas', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'post_annealing_conditions']"
+10.3379_JMSJMAG.13.469.json,1,[],['flux_material']
+10.3389_fmats.2018.00072.json,1,[],['starting_materials']
+10.3389_fphy.2020.567054.json,1,[],"['reaction_atmosphere', 'reaction_temperature', 'reaction_time', 'starting_materials']"
+10.35552_anujr.a.10.1.404.json,1,"['crucible_material', 'homogenization_steps']",[]
+10.3762_bjnano.16.53.json,1,"['base_pressure', 'deposition_gas', 'target_substrate_distance']","['chamber_base_pressure', 'deposition_atmosphere', 'fabrication_method', 'laser_wavelength', 'substrate', 'target_material', 'target_to_substrate_distance']"
+10.3938_JKPS.51.1743.json,1,['gas_ratios'],"['fabrication_method', 'gas_flow_rates', 'total_gas_flow_rate']"
+10.3938_jkps.58.77.json,1,[],['fabrication_method']
+10.4139_SFJ.43.340.json,1,['solution_concentration'],[]
+10.4236_aces.2018.81001.json,1,[],['starting_materials']
+10.4236_anp.2016.51009.json,2,"['base_pressure', 'deposition_duration', 'post_treatment', 'target_substrate_distance']","['chamber_base_pressure', 'fabrication_method', 'post_annealing_conditions', 'target_to_substrate_distance']"
+10.4236_njgc.2012.22011.json,1,"['calcination_conditions', 'sintering_conditions']","['purity', 'starting_materials']"
+10.46813_2020-125-220.json,1,[],['fabrication_method']
+10.46813_2020-125-220.json,2,[],['fabrication_method']
+10.46813_2020-125-220.json,3,[],['fabrication_method']
+10.46813_2020-125-220.json,6,[],['fabrication_method']
+10.47836_pjst.33.1.19.json,1,[],['starting_materials']
+10.5120_14022-1630.json,1,[],"['fabrication_method', 'substrate']"
+10.5755_j02.ms.31099.json,1,[],['fabrication_method']
+10.5772_10119.json,1,"['precursor_preparation', 'starting_composition']",['starting_materials']
+10.64214_jmsn.01.01002.json,1,[],"['fabrication_method', 'film_thickness', 'substrate']"
+10.71330_nucleus.45.01-2.995.json,1,[],"['solvent', 'starting_materials']"
+10.7498_APS.40.1694.json,1,[],['fabrication_method']
+10.7498_APS.48.1152.json,1,[],"['solvent', 'starting_material', 'substrate']"
+10.7498_APS.57.4371.json,1,"['deposition_gas', 'laser_energy', 'post_treatment']","['deposition_atmosphere', 'fabrication_method', 'laser_energy_density', 'laser_wavelength', 'post_annealing_conditions', 'substrate', 'target_spot_area']"
+10.7498_APS.64.097401.json,1,[],['fabrication_method']
+10.7498_aps.61.197401.json,1,[],"['base_atmosphere', 'base_pressure', 'fabrication_method']"
+10.7498_aps.62.127401.json,1,[],"['background_pressure', 'carrier_gas', 'carrier_gas_flow_rate', 'fabrication_method', 'precursor']"
+10.7498_aps.64.117401.json,1,[],"['flux_method', 'starting_materials']"
+10.7498_aps.65.097401.json,2,[],['fabrication_method']
+10.7498_aps.67.20180940.json,2,[],['fabrication_method']
+10.7498_aps.67.20181401.json,1,[],['fabrication_method']
+10.7498_aps.69.20191914.json,1,['deposition_duration'],"['deposition_sequence', 'fabrication_method', 'film_thickness', 'substrate', 'substrate_size']"
+10.7498_aps.71.20220050.json,1,"['base_pressure', 'deposition_duration', 'post_treatment']","['chamber_base_pressure', 'deposition_time', 'fabrication_method', 'post_annealing_conditions']"
+10.7498_aps.74.20250903.json,1,"['deposition_duration', 'deposition_gas']","['deposition_atmosphere', 'deposition_time', 'fabrication_method']"
+10.7498_aps.74.20250903.json,2,"['deposition_duration', 'deposition_gas']","['deposition_atmosphere', 'deposition_time', 'fabrication_method']"
+10.7498_aps.74.20250903.json,3,"['deposition_duration', 'deposition_gas']","['deposition_atmosphere', 'deposition_time', 'fabrication_method']"
+10.7498_aps.75.20251031.json,1,[],"['coating_method', 'fabrication_method', 'post_treatment', 'starting_material', 'substrate']"
+10.7498_aps.75.20251207.json,1,[],['fabrication_method']
+10.7566_JPSJ.95.034709.json,1,[],['fabrication_method']

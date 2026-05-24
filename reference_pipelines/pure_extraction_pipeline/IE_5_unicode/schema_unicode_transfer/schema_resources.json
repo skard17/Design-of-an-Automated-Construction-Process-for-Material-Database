@@ -1,0 +1,8 @@
+{
+  "resources": {
+  "software": 1,
+  "code": {"availability": 0, "link": 0},
+  "raw_data": {"type": 0, "availability": 0, "link": 0, "notes": 0},
+  "cif": {"availability": 0, "repository": 0, "identifier": 0}
+  }
+}

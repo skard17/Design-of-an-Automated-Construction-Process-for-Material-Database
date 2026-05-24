@@ -1,0 +1,95 @@
+{
+  "section1": {
+    "Tc": [
+      {
+        "value": null,
+        "magnetic_field": null,
+        "pressure": null,
+        "direction": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "Jc": [
+      {
+        "value": null,
+        "temperature": null,
+        "magnetic_field": null,
+        "pressure": null,
+        "direction": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "Hc1": [
+      {
+        "value": null,
+        "temperature": null,
+        "pressure": null,
+        "direction": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "Hc2": [
+      {
+        "value": null,
+        "temperature": null,
+        "pressure": null,
+        "direction": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "Hc": [
+      {
+        "value": null,
+        "temperature": null,
+        "pressure": null,
+        "direction": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "P_sc": [
+      {
+        "value": null,
+        "temperature": null,
+        "magnetic_field": null,
+        "direction": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "P_nsc": [
+      {
+        "value": null,
+        "temperature": null,
+        "magnetic_field": null,
+        "direction": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "lambda": [
+      {
+        "value": null,
+        "temperature": null,
+        "magnetic_field": null,
+        "pressure": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ],
+    "xi": [
+      {
+        "value": null,
+        "temperature": null,
+        "magnetic_field": null,
+        "pressure": null,
+        "figure": null,
+        "characteristics": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "section5": {
+  "gap_symmetry": ["string"],
+  "pairing_mechanism": ["string"],
+  "competing_orders": ["string"],
+  "calculation_method": ["string"],
+  "theoretical_keywords": ["string"],
+  "discussion_and_analysis": "string"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "primary_signature": null,
+  "material_info": {
+    "section0": {
+      "electronic_state_tuning_mechanism": [],
+      "carrier_concentration": [],
+      "secondary_phases": [],
+      "stack_descriptor": []
+    },
+    "section1": {
+      "Tc": [],
+      "Jc": [],
+      "Hc1": [],
+      "Hc2": [],
+      "Hc": [],
+      "P_sc": [],
+      "P_nsc": [],
+      "lambda": [],
+      "xi": []
+    },
+    "section2": [
+      {
+        "method": null,
+        "description": null,
+        "geometry": [],
+        "conditions": {}
+      }
+    ],
+    "section3": {
+      "crystal_structure_diagram": {},
+      "XRD": {},
+      "NMR": {},
+      "AFM": {},
+      "SEM": {},
+      "TEM": {},
+      "STM": {},
+      "STS": {},
+      "band_structure": {},
+      "band_dispersion": {},
+      "EDC": {},
+      "MDC": {},
+      "fermi_surface": {},
+      "others": []
+    },
+    "section4": {
+      "R_T": [],
+      "R_H": [],
+      "I_V": [],
+      "specific_heat": [],
+      "M_T": [],
+      "chi_T": [],
+      "PDO": [],
+      "thermal_conductivity": [],
+      "nernst_effect": [],
+      "others": []
+    }
+  },
+  "section5": {
+    "gap_symmetry": [],
+    "pairing_mechanism": [],
+    "competing_orders": [],
+    "calculation_method": [],
+    "discussion_and_analysis": null
+  },
+  "paper_info": {
+    "metadata": {
+      "title": null,
+      "year": null,
+      "paper_type": null,
+      "doi": null,
+      "arxiv_id": null,
+      "url": null,
+      "venue": null
+    },
+    "resources": {
+      "software": [],
+      "code": [],
+      "raw_data": [],
+      "cif": []
+    }
+  }
+}

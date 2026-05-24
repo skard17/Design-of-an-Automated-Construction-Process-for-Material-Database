@@ -1,0 +1,24 @@
+{
+ "section3": {
+  "crystal_structure_diagram": {"figure": ["string"], "raw_data": "string"},
+  "XRD": {"figure": ["string"], "raw_data": "string"},
+  "NMR": {"figure": ["string"], "raw_data": "string"},
+  "AFM": {"figure": ["string"], "raw_data": "string"},
+  "SEM": {"figure": ["string"], "raw_data": "string"},
+  "TEM": {"figure": ["string"], "raw_data": "string"},
+  "STM": {"figure": ["string"], "raw_data": "string"},
+  "band_structure": {"figure": ["string"], "raw_data": "string"},
+  "band_dispersion": {"figure": ["string"], "raw_data": "string"},
+  "EDC": {"figure": ["string"], "raw_data": "string"},
+  "MDC": {"figure": ["string"], "raw_data": "string"},
+  "fermi_surface": {"figure": ["string"], "raw_data": "string"},
+  "STS": {"figure": ["string"], "raw_data": "string"},
+  "others": [
+    {
+      "name": "string",
+      "figure": "string",
+      "raw_data": "string"
+    }
+  ]
+ }
+}

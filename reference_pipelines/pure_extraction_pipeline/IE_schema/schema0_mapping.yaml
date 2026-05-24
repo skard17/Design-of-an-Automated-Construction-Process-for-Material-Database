@@ -1,0 +1,14 @@
+primary_signature: Material
+
+material_info: Material Information
+material_info.section0: Material Information.General Information
+material_info.section1: Material Information.Critical Values and Ginzburg Landau Parameters
+material_info.section2: Material Information.Fabrication
+material_info.section3: Material Information.Microscopic Characterization and Electronic Structure
+material_info.section4: Material Information.Physical Property Curves
+
+section5: Theory and Mechanism
+
+paper_info: Paper Information
+paper_info.metadata: Paper Information.Metadata
+paper_info.resources: Paper Information.Resources

@@ -1,0 +1,82 @@
+{
+  "Material": null,
+  "Material Information": {
+    "General Information": {
+      "Electronic State Tuning Mechanism": [],
+      "Carrier Concentration": [],
+      "Secondary Phases": [],
+      "Stack Descriptor": []
+    },
+    "Critical Values and Ginzburg-Landau Parameters": {
+      "Critical Temperature (Tc)": [],
+      "Critical Current Density (Jc)": [],
+      "Lower Critical Field (Hc1)": [],
+      "Upper Critical Field (Hc2)": [],
+      "Thermodynamic Critical Field (Hc)": [],
+      "Superconducting Pressure (P_sc)": [],
+      "Non-Superconducting Pressure (P_nsc)": [],
+      "London Penetration Depth (λ)": [],
+      "Coherence Length (ξ)": []
+    },
+    "Fabrication": [
+      {
+        "Method": null,
+        "Description": null,
+        "Geometry": [],
+        "Conditions": {}
+      }
+    ],
+    "Microscopic Characterization and Electronic Structure": {
+      "Crystal Structure Diagram": {},
+      "XRD": {},
+      "NMR": {},
+      "AFM": {},
+      "SEM": {},
+      "TEM": {},
+      "STM": {},
+      "STS": {},
+      "Band Structure": {},
+      "Band Dispersion": {},
+      "EDC": {},
+      "MDC": {},
+      "Fermi Surface": {},
+      "Others": []
+    },
+    "Physical Property Curves": {
+      "R-T": [],
+      "R-H": [],
+      "I-V": [],
+      "Specific Heat": [],
+      "M-T": [],
+      "χ-T": [],
+      "PDO": [],
+      "Thermal Conductivity": [],
+      "Nernst Effect": [],
+      "Others": []
+    }
+  },
+  "Theory and Mechanism": {
+    "Gap Symmetry": [],
+    "Pairing Mechanism": [],
+    "Competing Orders": [],
+    "Calculation Method": [],
+    "Discussion and Analysis": null
+  },
+  "Paper Information": {
+    "Metadata": {
+      "Title": null,
+      "Year": null,
+      "Paper Type": null,
+      "DOI": null,
+      "arXiv ID": null,
+      "URL": null,
+      "Venue": null
+    },
+    "Resources": {
+      "Software": [],
+      "Code": [],
+      "Raw Data": [],
+      "CIF": []
+    }
+  }
+}

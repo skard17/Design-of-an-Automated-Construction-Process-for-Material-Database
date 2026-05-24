@@ -1,0 +1,8 @@
+{
+  "resources": {
+  "software": [null, null],
+  "code": [{"availability": null, "link": null},{"availability": null, "link": null}],
+  "raw_data": [{"type": null, "availability": null, "link": null, "notes": null},{"type": null, "availability": null, "link": null, "notes": null}],
+  "cif": [{"availability": null, "repository": null, "identifier": [null, null]},{"availability": null, "repository": null, "identifier": [null, null]}]
+  }
+}

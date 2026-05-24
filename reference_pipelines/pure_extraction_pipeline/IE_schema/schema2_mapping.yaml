@@ -1,0 +1,336 @@
+# ===== 顶层字段 =====
+primary_signature: Material
+material_info: Material Information
+section5: Theory and Mechanism
+paper_info: Paper Information
+
+# ===== Material Information =====
+material_info.section0: Material Information.General Information
+material_info.section0.electronic_state_tuning_mechanism: Material Information.General Information.Electronic State Tuning Mechanism
+material_info.section0.electronic_state_tuning_mechanism.tuning_type: Material Information.General Information.Electronic State Tuning Mechanism.tuning type
+material_info.section0.electronic_state_tuning_mechanism.dopant_defect: Material Information.General Information.Electronic State Tuning Mechanism.dopant/defect
+material_info.section0.electronic_state_tuning_mechanism.parameter: Material Information.General Information.Electronic State Tuning Mechanism.parameter
+material_info.section0.electronic_state_tuning_mechanism.stoichiometry: Material Information.General Information.Electronic State Tuning Mechanism.stoichiometry
+material_info.section0.electronic_state_tuning_mechanism.carrier_effect: Material Information.General Information.Electronic State Tuning Mechanism.carrier effect
+
+material_info.section0.carrier_concentration: Material Information.General Information.Carrier Concentration
+material_info.section0.carrier_concentration.level: Material Information.General Information.Carrier Concentration.level
+material_info.section0.carrier_concentration.unit: Material Information.General Information.Carrier Concentration.unit
+material_info.section0.carrier_concentration.basis: Material Information.General Information.Carrier Concentration.basis
+material_info.section0.carrier_concentration.conditions: Material Information.General Information.Carrier Concentration.conditions
+
+material_info.section0.secondary_phases: Material Information.General Information.Secondary Phases
+material_info.section0.secondary_phases.phase: Material Information.General Information.Secondary Phases.phase
+material_info.section0.secondary_phases.role: Material Information.General Information.Secondary Phases.role
+material_info.section0.secondary_phases.fraction: Material Information.General Information.Secondary Phases.fraction
+material_info.section0.secondary_phases.fraction.value: Material Information.General Information.Secondary Phases.fraction.value
+material_info.section0.secondary_phases.fraction.unit: Material Information.General Information.Secondary Phases.fraction.unit
+
+material_info.section0.stack_descriptor: Material Information.General Information.Stack Descriptor
+material_info.section0.stack_descriptor.architecture: Material Information.General Information.Stack Descriptor.architecture
+material_info.section0.stack_descriptor.layers: Material Information.General Information.Stack Descriptor.layers
+material_info.section0.stack_descriptor.layers.material: Material Information.General Information.Stack Descriptor.layers.material
+material_info.section0.stack_descriptor.layers.role: Material Information.General Information.Stack Descriptor.layers.role
+material_info.section0.stack_descriptor.layers.thickness: Material Information.General Information.Stack Descriptor.layers.thickness
+material_info.section0.stack_descriptor.layers.unit: Material Information.General Information.Stack Descriptor.layers.unit
+material_info.section0.stack_descriptor.periodicity: Material Information.General Information.Stack Descriptor.periodicity
+material_info.section0.stack_descriptor.notes: Material Information.General Information.Stack Descriptor.notes
+
+material_info.section1: Material Information.Critical Values and Ginzburg-Landau Parameters
+material_info.section1.Tc: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Temperature (Tc)
+material_info.section1.Tc.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Temperature (Tc).value
+material_info.section1.Tc.magnetic_field: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Temperature (Tc).magnetic_field
+material_info.section1.Tc.pressure: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Temperature (Tc).pressure
+material_info.section1.Tc.direction: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Temperature (Tc).direction
+material_info.section1.Tc.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Temperature (Tc).figure
+material_info.section1.Tc.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Temperature (Tc).characteristics
+
+material_info.section1.Jc: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc)
+material_info.section1.Jc.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc).value
+material_info.section1.Jc.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc).temperature
+material_info.section1.Jc.magnetic_field: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc).magnetic_field
+material_info.section1.Jc.pressure: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc).pressure
+material_info.section1.Jc.direction: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc).direction
+material_info.section1.Jc.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc).figure
+material_info.section1.Jc.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Critical Current Density (Jc).characteristics
+
+material_info.section1.Hc1: Material Information.Critical Values and Ginzburg-Landau Parameters.Lower Critical Field (Hc1)
+material_info.section1.Hc1.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Lower Critical Field (Hc1).value
+material_info.section1.Hc1.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.Lower Critical Field (Hc1).temperature
+material_info.section1.Hc1.pressure: Material Information.Critical Values and Ginzburg-Landau Parameters.Lower Critical Field (Hc1).pressure
+material_info.section1.Hc1.direction: Material Information.Critical Values and Ginzburg-Landau Parameters.Lower Critical Field (Hc1).direction
+material_info.section1.Hc1.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Lower Critical Field (Hc1).figure
+material_info.section1.Hc1.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Lower Critical Field (Hc1).characteristics
+
+material_info.section1.Hc2: Material Information.Critical Values and Ginzburg-Landau Parameters.Upper Critical Field (Hc2)
+material_info.section1.Hc2.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Upper Critical Field (Hc2).value
+material_info.section1.Hc2.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.Upper Critical Field (Hc2).temperature
+material_info.section1.Hc2.pressure: Material Information.Critical Values and Ginzburg-Landau Parameters.Upper Critical Field (Hc2).pressure
+material_info.section1.Hc2.direction: Material Information.Critical Values and Ginzburg-Landau Parameters.Upper Critical Field (Hc2).direction
+material_info.section1.Hc2.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Upper Critical Field (Hc2).figure
+material_info.section1.Hc2.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Upper Critical Field (Hc2).characteristics
+
+material_info.section1.Hc: Material Information.Critical Values and Ginzburg-Landau Parameters.Thermodynamic Critical Field (Hc)
+material_info.section1.Hc.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Thermodynamic Critical Field (Hc).value
+material_info.section1.Hc.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.Thermodynamic Critical Field (Hc).temperature
+material_info.section1.Hc.pressure: Material Information.Critical Values and Ginzburg-Landau Parameters.Thermodynamic Critical Field (Hc).pressure
+material_info.section1.Hc.direction: Material Information.Critical Values and Ginzburg-Landau Parameters.Thermodynamic Critical Field (Hc).direction
+material_info.section1.Hc.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Thermodynamic Critical Field (Hc).figure
+material_info.section1.Hc.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Thermodynamic Critical Field (Hc).characteristics
+
+material_info.section1.P_sc: Material Information.Critical Values and Ginzburg-Landau Parameters.Superconducting Pressure (P_sc)
+material_info.section1.P_sc.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Superconducting Pressure (P_sc).value
+material_info.section1.P_sc.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.Superconducting Pressure (P_sc).temperature
+material_info.section1.P_sc.magnetic_field: Material Information.Critical Values and Ginzburg-Landau Parameters.Superconducting Pressure (P_sc).magnetic_field
+material_info.section1.P_sc.direction: Material Information.Critical Values and Ginzburg-Landau Parameters.Superconducting Pressure (P_sc).direction
+material_info.section1.P_sc.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Superconducting Pressure (P_sc).figure
+material_info.section1.P_sc.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Superconducting Pressure (P_sc).characteristics
+
+material_info.section1.P_nsc: Material Information.Critical Values and Ginzburg-Landau Parameters.Non-Superconducting Pressure (P_nsc)
+material_info.section1.P_nsc.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Non-Superconducting Pressure (P_nsc).value
+material_info.section1.P_nsc.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.Non-Superconducting Pressure (P_nsc).temperature
+material_info.section1.P_nsc.magnetic_field: Material Information.Critical Values and Ginzburg-Landau Parameters.Non-Superconducting Pressure (P_nsc).magnetic_field
+material_info.section1.P_nsc.direction: Material Information.Critical Values and Ginzburg-Landau Parameters.Non-Superconducting Pressure (P_nsc).direction
+material_info.section1.P_nsc.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Non-Superconducting Pressure (P_nsc).figure
+material_info.section1.P_nsc.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Non-Superconducting Pressure (P_nsc).characteristics
+
+material_info.section1.lambda: Material Information.Critical Values and Ginzburg-Landau Parameters.London Penetration Depth (λ)
+material_info.section1.lambda.value: Material Information.Critical Values and Ginzburg-Landau Parameters.London Penetration Depth (λ).value
+material_info.section1.lambda.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.London Penetration Depth (λ).temperature
+material_info.section1.lambda.magnetic_field: Material Information.Critical Values and Ginzburg-Landau Parameters.London Penetration Depth (λ).magnetic_field
+material_info.section1.lambda.pressure: Material Information.Critical Values and Ginzburg-Landau Parameters.London Penetration Depth (λ).pressure
+material_info.section1.lambda.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.London Penetration Depth (λ).figure
+material_info.section1.lambda.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.London Penetration Depth (λ).characteristics
+
+material_info.section1.xi: Material Information.Critical Values and Ginzburg-Landau Parameters.Coherence Length (ξ)
+material_info.section1.xi.value: Material Information.Critical Values and Ginzburg-Landau Parameters.Coherence Length (ξ).value
+material_info.section1.xi.temperature: Material Information.Critical Values and Ginzburg-Landau Parameters.Coherence Length (ξ).temperature
+material_info.section1.xi.magnetic_field: Material Information.Critical Values and Ginzburg-Landau Parameters.Coherence Length (ξ).magnetic_field
+material_info.section1.xi.pressure: Material Information.Critical Values and Ginzburg-Landau Parameters.Coherence Length (ξ).pressure
+material_info.section1.xi.figure: Material Information.Critical Values and Ginzburg-Landau Parameters.Coherence Length (ξ).figure
+material_info.section1.xi.characteristics: Material Information.Critical Values and Ginzburg-Landau Parameters.Coherence Length (ξ).characteristics
+
+material_info.section2: Material Information.Fabrication
+material_info.section2.method: Material Information.Fabrication.Method
+material_info.section2.description: Material Information.Fabrication.Description
+material_info.section2.geometry: Material Information.Fabrication.Geometry
+material_info.section2.conditions: Material Information.Fabrication.Conditions
+
+material_info.section3: Material Information.Microscopic Characterization and Electronic Structure
+material_info.section3.crystal_structure_diagram: Material Information.Microscopic Characterization and Electronic Structure.Crystal Structure Diagram
+material_info.section3.crystal_structure_diagram.figure: Material Information.Microscopic Characterization and Electronic Structure.Crystal Structure Diagram.figure
+material_info.section3.crystal_structure_diagram.raw_data: Material Information.Microscopic Characterization and Electronic Structure.Crystal Structure Diagram.raw data
+
+material_info.section3.XRD: Material Information.Microscopic Characterization and Electronic Structure.XRD
+material_info.section3.XRD.figure: Material Information.Microscopic Characterization and Electronic Structure.XRD.figure
+material_info.section3.XRD.raw_data: Material Information.Microscopic Characterization and Electronic Structure.XRD.raw data
+
+material_info.section3.NMR: Material Information.Microscopic Characterization and Electronic Structure.NMR
+material_info.section3.NMR.figure: Material Information.Microscopic Characterization and Electronic Structure.NMR.figure
+material_info.section3.NMR.raw_data: Material Information.Microscopic Characterization and Electronic Structure.NMR.raw data
+
+material_info.section3.AFM: Material Information.Microscopic Characterization and Electronic Structure.AFM
+material_info.section3.AFM.figure: Material Information.Microscopic Characterization and Electronic Structure.AFM.figure
+material_info.section3.AFM.raw_data: Material Information.Microscopic Characterization and Electronic Structure.AFM.raw data
+
+material_info.section3.SEM: Material Information.Microscopic Characterization and Electronic Structure.SEM
+material_info.section3.SEM.figure: Material Information.Microscopic Characterization and Electronic Structure.SEM.figure
+material_info.section3.SEM.raw_data: Material Information.Microscopic Characterization and Electronic Structure.SEM.raw data
+
+material_info.section3.TEM: Material Information.Microscopic Characterization and Electronic Structure.TEM
+material_info.section3.TEM.figure: Material Information.Microscopic Characterization and Electronic Structure.TEM.figure
+material_info.section3.TEM.raw_data: Material Information.Microscopic Characterization and Electronic Structure.TEM.raw data
+
+material_info.section3.STM: Material Information.Microscopic Characterization and Electronic Structure.STM
+material_info.section3.STM.figure: Material Information.Microscopic Characterization and Electronic Structure.STM.figure
+material_info.section3.STM.raw_data: Material Information.Microscopic Characterization and Electronic Structure.STM.raw data
+
+material_info.section3.STS: Material Information.Microscopic Characterization and Electronic Structure.STS
+material_info.section3.STS.figure: Material Information.Microscopic Characterization and Electronic Structure.STS.figure
+material_info.section3.STS.raw_data: Material Information.Microscopic Characterization and Electronic Structure.STS.raw data
+
+material_info.section3.band_structure: Material Information.Microscopic Characterization and Electronic Structure.Band Structure
+material_info.section3.band_structure.figure: Material Information.Microscopic Characterization and Electronic Structure.Band Structure.figure
+material_info.section3.band_structure.raw_data: Material Information.Microscopic Characterization and Electronic Structure.Band Structure.raw data
+
+material_info.section3.band_dispersion: Material Information.Microscopic Characterization and Electronic Structure.Band Dispersion
+material_info.section3.band_dispersion.figure: Material Information.Microscopic Characterization and Electronic Structure.Band Dispersion.figure
+material_info.section3.band_dispersion.raw_data: Material Information.Microscopic Characterization and Electronic Structure.Band Dispersion.raw data
+
+material_info.section3.EDC: Material Information.Microscopic Characterization and Electronic Structure.EDC
+material_info.section3.EDC.figure: Material Information.Microscopic Characterization and Electronic Structure.EDC.figure
+material_info.section3.EDC.raw_data: Material Information.Microscopic Characterization and Electronic Structure.EDC.raw data
+
+material_info.section3.MDC: Material Information.Microscopic Characterization and Electronic Structure.MDC
+material_info.section3.MDC.figure: Material Information.Microscopic Characterization and Electronic Structure.MDC.figure
+material_info.section3.MDC.raw_data: Material Information.Microscopic Characterization and Electronic Structure.MDC.raw data
+
+material_info.section3.fermi_surface: Material Information.Microscopic Characterization and Electronic Structure.Fermi Surface
+material_info.section3.fermi_surface.figure: Material Information.Microscopic Characterization and Electronic Structure.Fermi Surface.figure
+material_info.section3.fermi_surface.raw_data: Material Information.Microscopic Characterization and Electronic Structure.Fermi Surface.raw data
+
+material_info.section3.others: Material Information.Microscopic Characterization and Electronic Structure.Others
+material_info.section3.others.name: Material Information.Microscopic Characterization and Electronic Structure.Others.name
+material_info.section3.others.figure: Material Information.Microscopic Characterization and Electronic Structure.Others.figure
+material_info.section3.others.raw_data: Material Information.Microscopic Characterization and Electronic Structure.Others.raw data
+
+material_info.section4: Material Information.Physical Property Curves
+material_info.section4.R_T: Material Information.Physical Property Curves.R-T
+material_info.section4.R_T.figure: Material Information.Physical Property Curves.R-T.figure
+material_info.section4.R_T.magnetic_field: Material Information.Physical Property Curves.R-T.magnetic field
+material_info.section4.R_T.magnetic_direction: Material Information.Physical Property Curves.R-T.magnetic direction
+material_info.section4.R_T.magnetic_direction_reference: Material Information.Physical Property Curves.R-T.magnetic direction reference
+material_info.section4.R_T.pressure: Material Information.Physical Property Curves.R-T.pressure
+material_info.section4.R_T.angles: Material Information.Physical Property Curves.R-T.angles
+material_info.section4.R_T.angles_reference: Material Information.Physical Property Curves.R-T.angles reference
+material_info.section4.R_T.current: Material Information.Physical Property Curves.R-T.current
+material_info.section4.R_T.current_direction: Material Information.Physical Property Curves.R-T.current direction
+material_info.section4.R_T.raw_data: Material Information.Physical Property Curves.R-T.raw data
+
+material_info.section4.R_H: Material Information.Physical Property Curves.R-H
+material_info.section4.R_H.figure: Material Information.Physical Property Curves.R-H.figure
+material_info.section4.R_H.temperature: Material Information.Physical Property Curves.R-H.temperature
+material_info.section4.R_H.magnetic_field: Material Information.Physical Property Curves.R-H.magnetic field
+material_info.section4.R_H.magnetic_direction: Material Information.Physical Property Curves.R-H.magnetic direction
+material_info.section4.R_H.magnetic_direction_reference: Material Information.Physical Property Curves.R-H.magnetic direction reference
+material_info.section4.R_H.pressure: Material Information.Physical Property Curves.R-H.pressure
+material_info.section4.R_H.angles: Material Information.Physical Property Curves.R-H.angles
+material_info.section4.R_H.angles_reference: Material Information.Physical Property Curves.R-H.angles reference
+material_info.section4.R_H.current: Material Information.Physical Property Curves.R-H.current
+material_info.section4.R_H.current_direction: Material Information.Physical Property Curves.R-H.current direction
+material_info.section4.R_H.raw_data: Material Information.Physical Property Curves.R-H.raw data
+
+material_info.section4.I_V: Material Information.Physical Property Curves.I-V
+material_info.section4.I_V.figure: Material Information.Physical Property Curves.I-V.figure
+material_info.section4.I_V.temperature: Material Information.Physical Property Curves.I-V.temperature
+material_info.section4.I_V.magnetic_field: Material Information.Physical Property Curves.I-V.magnetic field
+material_info.section4.I_V.magnetic_direction: Material Information.Physical Property Curves.I-V.magnetic direction
+material_info.section4.I_V.magnetic_direction_reference: Material Information.Physical Property Curves.I-V.magnetic direction reference
+material_info.section4.I_V.pressure: Material Information.Physical Property Curves.I-V.pressure
+material_info.section4.I_V.angles: Material Information.Physical Property Curves.I-V.angles
+material_info.section4.I_V.angles_reference: Material Information.Physical Property Curves.I-V.angles reference
+material_info.section4.I_V.current: Material Information.Physical Property Curves.I-V.current
+material_info.section4.I_V.current_direction: Material Information.Physical Property Curves.I-V.current direction
+material_info.section4.I_V.raw_data: Material Information.Physical Property Curves.I-V.raw data
+
+material_info.section4.specific_heat: Material Information.Physical Property Curves.Specific Heat
+material_info.section4.specific_heat.figure: Material Information.Physical Property Curves.Specific Heat.figure
+material_info.section4.specific_heat.magnetic_field: Material Information.Physical Property Curves.Specific Heat.magnetic field
+material_info.section4.specific_heat.magnetic_direction: Material Information.Physical Property Curves.Specific Heat.magnetic direction
+material_info.section4.specific_heat.magnetic_direction_reference: Material Information.Physical Property Curves.Specific Heat.magnetic direction reference
+material_info.section4.specific_heat.pressure: Material Information.Physical Property Curves.Specific Heat.pressure
+material_info.section4.specific_heat.angles: Material Information.Physical Property Curves.Specific Heat.angles
+material_info.section4.specific_heat.angles_reference: Material Information.Physical Property Curves.Specific Heat.angles reference
+material_info.section4.specific_heat.raw_data: Material Information.Physical Property Curves.Specific Heat.raw data
+
+material_info.section4.M_T: Material Information.Physical Property Curves.M-T
+material_info.section4.M_T.figure: Material Information.Physical Property Curves.M-T.figure
+material_info.section4.M_T.magnetic_field: Material Information.Physical Property Curves.M-T.magnetic field
+material_info.section4.M_T.magnetic_direction: Material Information.Physical Property Curves.M-T.magnetic direction
+material_info.section4.M_T.magnetic_direction_reference: Material Information.Physical Property Curves.M-T.magnetic direction reference
+material_info.section4.M_T.pressure: Material Information.Physical Property Curves.M-T.pressure
+material_info.section4.M_T.angles: Material Information.Physical Property Curves.M-T.angles
+material_info.section4.M_T.angles_reference: Material Information.Physical Property Curves.M-T.angles reference
+material_info.section4.M_T.field_cooling: Material Information.Physical Property Curves.M-T.field cooling
+material_info.section4.M_T.magnetometer: Material Information.Physical Property Curves.M-T.magnetometer
+material_info.section4.M_T.raw_data: Material Information.Physical Property Curves.M-T.raw data
+
+material_info.section4.chi_T: Material Information.Physical Property Curves.χ-T
+material_info.section4.chi_T.figure: Material Information.Physical Property Curves.χ-T.figure
+material_info.section4.chi_T.magnetic_field: Material Information.Physical Property Curves.χ-T.magnetic field
+material_info.section4.chi_T.magnetic_direction: Material Information.Physical Property Curves.χ-T.magnetic direction
+material_info.section4.chi_T.magnetic_direction_reference: Material Information.Physical Property Curves.χ-T.magnetic direction reference
+material_info.section4.chi_T.pressure: Material Information.Physical Property Curves.χ-T.pressure
+material_info.section4.chi_T.angles: Material Information.Physical Property Curves.χ-T.angles
+material_info.section4.chi_T.angles_reference: Material Information.Physical Property Curves.χ-T.angles reference
+material_info.section4.chi_T.frequency: Material Information.Physical Property Curves.χ-T.frequency
+material_info.section4.chi_T.raw_data: Material Information.Physical Property Curves.χ-T.raw data
+
+material_info.section4.PDO: Material Information.Physical Property Curves.PDO
+material_info.section4.PDO.figure: Material Information.Physical Property Curves.PDO.figure
+material_info.section4.PDO.variable: Material Information.Physical Property Curves.PDO.variable
+material_info.section4.PDO.temperature: Material Information.Physical Property Curves.PDO.temperature
+material_info.section4.PDO.magnetic_field: Material Information.Physical Property Curves.PDO.magnetic field
+material_info.section4.PDO.magnetic_direction: Material Information.Physical Property Curves.PDO.magnetic direction
+material_info.section4.PDO.magnetic_direction_reference: Material Information.Physical Property Curves.PDO.magnetic direction reference
+material_info.section4.PDO.pressure: Material Information.Physical Property Curves.PDO.pressure
+material_info.section4.PDO.angles: Material Information.Physical Property Curves.PDO.angles
+material_info.section4.PDO.angles_reference: Material Information.Physical Property Curves.PDO.angles reference
+material_info.section4.PDO.current: Material Information.Physical Property Curves.PDO.current
+material_info.section4.PDO.current_direction: Material Information.Physical Property Curves.PDO.current direction
+material_info.section4.PDO.raw_data: Material Information.Physical Property Curves.PDO.raw data
+
+material_info.section4.thermal_conductivity: Material Information.Physical Property Curves.Thermal Conductivity
+material_info.section4.thermal_conductivity.figure: Material Information.Physical Property Curves.Thermal Conductivity.figure
+material_info.section4.thermal_conductivity.variable: Material Information.Physical Property Curves.Thermal Conductivity.variable
+material_info.section4.thermal_conductivity.temperature: Material Information.Physical Property Curves.Thermal Conductivity.temperature
+material_info.section4.thermal_conductivity.magnetic_field: Material Information.Physical Property Curves.Thermal Conductivity.magnetic field
+material_info.section4.thermal_conductivity.magnetic_direction: Material Information.Physical Property Curves.Thermal Conductivity.magnetic direction
+material_info.section4.thermal_conductivity.magnetic_direction_reference: Material Information.Physical Property Curves.Thermal Conductivity.magnetic direction reference
+material_info.section4.thermal_conductivity.pressure: Material Information.Physical Property Curves.Thermal Conductivity.pressure
+material_info.section4.thermal_conductivity.angles: Material Information.Physical Property Curves.Thermal Conductivity.angles
+material_info.section4.thermal_conductivity.angles_reference: Material Information.Physical Property Curves.Thermal Conductivity.angles reference
+material_info.section4.thermal_conductivity.current: Material Information.Physical Property Curves.Thermal Conductivity.current
+material_info.section4.thermal_conductivity.current_direction: Material Information.Physical Property Curves.Thermal Conductivity.current direction
+material_info.section4.thermal_conductivity.raw_data: Material Information.Physical Property Curves.Thermal Conductivity.raw data
+
+material_info.section4.nernst_effect: Material Information.Physical Property Curves.Nernst Effect
+material_info.section4.nernst_effect.figure: Material Information.Physical Property Curves.Nernst Effect.figure
+material_info.section4.nernst_effect.signal: Material Information.Physical Property Curves.Nernst Effect.signal
+material_info.section4.nernst_effect.variable: Material Information.Physical Property Curves.Nernst Effect.variable
+material_info.section4.nernst_effect.temperature: Material Information.Physical Property Curves.Nernst Effect.temperature
+material_info.section4.nernst_effect.magnetic_field: Material Information.Physical Property Curves.Nernst Effect.magnetic field
+material_info.section4.nernst_effect.magnetic_direction: Material Information.Physical Property Curves.Nernst Effect.magnetic direction
+material_info.section4.nernst_effect.magnetic_direction_reference: Material Information.Physical Property Curves.Nernst Effect.magnetic direction reference
+material_info.section4.nernst_effect.pressure: Material Information.Physical Property Curves.Nernst Effect.pressure
+material_info.section4.nernst_effect.angles: Material Information.Physical Property Curves.Nernst Effect.angles
+material_info.section4.nernst_effect.angles_reference: Material Information.Physical Property Curves.Nernst Effect.angles reference
+material_info.section4.nernst_effect.current: Material Information.Physical Property Curves.Nernst Effect.current
+material_info.section4.nernst_effect.current_direction: Material Information.Physical Property Curves.Nernst Effect.current direction
+material_info.section4.nernst_effect.raw_data: Material Information.Physical Property Curves.Nernst Effect.raw data
+
+material_info.section4.others: Material Information.Physical Property Curves.Others
+material_info.section4.others.name: Material Information.Physical Property Curves.Others.name
+material_info.section4.others.figure: Material Information.Physical Property Curves.Others.figure
+material_info.section4.others.detail: Material Information.Physical Property Curves.Others.detail
+material_info.section4.others.detail.independent_variable: Material Information.Physical Property Curves.Others.detail.independent variable
+material_info.section4.others.detail.dependent_variable: Material Information.Physical Property Curves.Others.detail.dependent variable
+material_info.section4.others.detail.conditions: Material Information.Physical Property Curves.Others.detail.conditions
+material_info.section4.others.detail.result: Material Information.Physical Property Curves.Others.detail.result
+material_info.section4.others.raw_data: Material Information.Physical Property Curves.Others.raw data
+
+# ===== Theory and Mechanism =====
+section5.gap_symmetry: Theory and Mechanism.Gap Symmetry
+section5.pairing_mechanism: Theory and Mechanism.Pairing Mechanism
+section5.competing_orders: Theory and Mechanism.Competing Orders
+section5.calculation_method: Theory and Mechanism.Calculation Method
+section5.discussion_and_analysis: Theory and Mechanism.Discussion and Analysis
+
+# ===== Paper Information =====
+paper_info.metadata: Paper Information.Metadata
+paper_info.metadata.title: Paper Information.Metadata.title
+paper_info.metadata.year: Paper Information.Metadata.year
+paper_info.metadata.paper_type: Paper Information.Metadata.paper type
+paper_info.metadata.doi: Paper Information.Metadata.doi
+paper_info.metadata.arxiv_id: Paper Information.Metadata.arXiv id
+paper_info.metadata.url: Paper Information.Metadata.url
+paper_info.metadata.venue: Paper Information.Metadata.venue
+
+paper_info.resources: Paper Information.Resources
+paper_info.resources.software: Paper Information.Resources.software
+paper_info.resources.code: Paper Information.Resources.code
+paper_info.resources.code.type: Paper Information.Resources.code.type
+paper_info.resources.code.availability: Paper Information.Resources.code.availability
+paper_info.resources.code.link: Paper Information.Resources.code.link
+paper_info.resources.code.notes: Paper Information.Resources.code.notes
+paper_info.resources.raw_data: Paper Information.Resources.raw data
+paper_info.resources.raw_data.type: Paper Information.Resources.raw data.type
+paper_info.resources.raw_data.availability: Paper Information.Resources.raw data.availability
+paper_info.resources.raw_data.link: Paper Information.Resources.raw data.link
+paper_info.resources.raw_data.notes: Paper Information.Resources.raw data.notes
+paper_info.resources.cif: Paper Information.Resources.cif
+paper_info.resources.cif.availability: Paper Information.Resources.cif.availability
+paper_info.resources.cif.repository: Paper Information.Resources.cif.repository
+paper_info.resources.cif.identifier: Paper Information.Resources.cif.identifier
+paper_info.resources.cif.link: Paper Information.Resources.cif.link
+paper_info.resources.cif.notes: Paper Information.Resources.cif.notes

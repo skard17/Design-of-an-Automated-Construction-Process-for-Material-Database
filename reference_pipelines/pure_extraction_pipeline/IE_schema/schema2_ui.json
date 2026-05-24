@@ -1,0 +1,400 @@
+{
+    "Material": null,
+    "Material Information": {
+      "General Information": {
+        "Electronic State Tuning Mechanism": [
+          {
+            "tuning type": null,
+            "dopant/defect": null,
+            "parameter": null,
+            "stoichiometry": null,
+            "carrier effect": null
+          }
+        ],
+        "Carrier Concentration": [
+          {
+            "level": null,
+            "unit": null,
+            "basis": null,
+            "conditions": null
+          }
+        ],
+        "Secondary Phases": [
+          {
+            "phase": null,
+            "role": null,
+            "fraction": {
+              "value": null,
+              "unit": null
+            }
+          }
+        ],
+        "Stack Descriptor": [
+          {
+            "architecture": null,
+            "layers": [
+              {
+                "material": null,
+                "role": null,
+                "thickness": null,
+                "unit": null
+              }
+            ],
+            "periodicity": null,
+            "notes": null
+          }
+        ]
+      },
+      "Critical Values and Ginzburg-Landau Parameters": {
+        "Critical Temperature (Tc)": [
+          {
+            "value": null,
+            "magnetic_field": null,
+            "pressure": null,
+            "direction": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "Critical Current Density (Jc)": [
+          {
+            "value": null,
+            "temperature": null,
+            "magnetic_field": null,
+            "pressure": null,
+            "direction": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "Lower Critical Field (Hc1)": [
+          {
+            "value": null,
+            "temperature": null,
+            "pressure": null,
+            "direction": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "Upper Critical Field (Hc2)": [
+          {
+            "value": null,
+            "temperature": null,
+            "pressure": null,
+            "direction": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "Thermodynamic Critical Field (Hc)": [
+          {
+            "value": null,
+            "temperature": null,
+            "pressure": null,
+            "direction": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "Superconducting Pressure (P_sc)": [
+          {
+            "value": null,
+            "temperature": null,
+            "magnetic_field": null,
+            "direction": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "Non-Superconducting Pressure (P_nsc)": [
+          {
+            "value": null,
+            "temperature": null,
+            "magnetic_field": null,
+            "direction": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "London Penetration Depth (λ)": [
+          {
+            "value": null,
+            "temperature": null,
+            "magnetic_field": null,
+            "pressure": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ],
+        "Coherence Length (ξ)": [
+          {
+            "value": null,
+            "temperature": null,
+            "magnetic_field": null,
+            "pressure": null,
+            "figure": null,
+            "characteristics": null
+          }
+        ]
+      },
+      "Fabrication": [
+        {
+          "Method": null,
+          "Description": null,
+          "Geometry": [],
+          "Conditions": {}
+        }
+      ],
+      "Microscopic Characterization and Electronic Structure": {
+        "Crystal Structure Diagram": {
+          "figure": [],
+          "raw data": null
+        },
+        "XRD": {
+          "figure": [],
+          "raw data": null
+        },
+        "NMR": {
+          "figure": [],
+          "raw data": null
+        },
+        "AFM": {
+          "figure": [],
+          "raw data": null
+        },
+        "SEM": {
+          "figure": [],
+          "raw data": null
+        },
+        "TEM": {
+          "figure": [],
+          "raw data": null
+        },
+        "STM": {
+          "figure": [],
+          "raw data": null
+        },
+        "STS": {
+          "figure": [],
+          "raw data": null
+        },
+        "Band Structure": {
+          "figure": [],
+          "raw data": null
+        },
+        "Band Dispersion": {
+          "figure": [],
+          "raw data": null
+        },
+        "EDC": {
+          "figure": [],
+          "raw data": null
+        },
+        "MDC": {
+          "figure": [],
+          "raw data": null
+        },
+        "Fermi Surface": {
+          "figure": [],
+          "raw data": null
+        },
+        "Others": [
+          {
+            "name": null,
+            "figure": [],
+            "raw data": null
+          }
+        ]
+      },
+      "Physical Property Curves": {
+        "R-T": [
+          {
+            "figure": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "current": [],
+            "current direction": null,
+            "raw data": null
+          }
+        ],
+        "R-H": [
+          {
+            "figure": [],
+            "temperature": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "current": [],
+            "current direction": null,
+            "raw data": null
+          }
+        ],
+        "I-V": [
+          {
+            "figure": [],
+            "temperature": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "current": [],
+            "current direction": null,
+            "raw data": null
+          }
+        ],
+        "Specific Heat": [
+          {
+            "figure": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "raw data": null
+          }
+        ],
+        "M-T": [
+          {
+            "figure": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "field cooling": [],
+            "magnetometer": [],
+            "raw data": null
+          }
+        ],
+        "χ-T": [
+          {
+            "figure": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "frequency": [],
+            "raw data": null
+          }
+        ],
+        "PDO": [
+          {
+            "figure": [],
+            "variable": null,
+            "temperature": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "current": [],
+            "current direction": null,
+            "raw data": null
+          }
+        ],
+        "Thermal Conductivity": [
+          {
+            "figure": [],
+            "variable": null,
+            "temperature": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "current": [],
+            "current direction": null,
+            "raw data": null
+          }
+        ],
+        "Nernst Effect": [
+          {
+            "figure": [],
+            "signal": null,
+            "variable": null,
+            "temperature": [],
+            "magnetic field": [],
+            "magnetic direction": null,
+            "magnetic direction reference": null,
+            "pressure": [],
+            "angles": [],
+            "angles reference": null,
+            "current": [],
+            "current direction": null,
+            "raw data": null
+          }
+        ],
+        "Others": [
+          {
+            "name": null,
+            "figure": null,
+            "detail": {
+              "independent variable": null,
+              "dependent variable": null,
+              "conditions": null,
+              "result": null
+            },
+            "raw data": null
+          }
+        ]
+      }
+    },
+    "Theory and Mechanism": {
+      "Gap Symmetry": [],
+      "Pairing Mechanism": [],
+      "Competing Orders": [],
+      "Calculation Method": [],
+      "Discussion and Analysis": null
+    },
+    "Paper Information": {
+      "Metadata": {
+        "title": null,
+        "year": null,
+        "paper type": null,
+        "doi": null,
+        "arXiv id": null,
+        "url": null,
+        "venue": null
+      },
+      "Resources": {
+        "software": [],
+        "code": {
+          "type": null,
+          "availability": null,
+          "link": [],
+          "notes": null
+        },
+        "raw data": [
+          {
+            "type": null,
+            "availability": null,
+            "link": [],
+            "notes": null
+          }
+        ],
+        "cif": {
+          "availability": null,
+          "repository": null,
+          "identifier": [],
+          "link": [],
+          "notes": null
+        }
+      }
+    }
+  }

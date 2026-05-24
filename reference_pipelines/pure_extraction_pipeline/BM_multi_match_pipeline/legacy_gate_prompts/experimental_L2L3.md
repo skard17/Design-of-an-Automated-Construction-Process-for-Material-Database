@@ -1,0 +1,93 @@
+# L2 & L3 Gates - Target Check + Information Extractability Check (Prepare for a Superconductors Database)
+
+## Role
+Act as an expert reviewer for superconductivity experimental papers.
+Your task is NOT multi-class labeling. Your task is to output two gates values (L2 & L3) for database ingestion.
+
+## Input
+You will receive the full paper text appended at the END of this prompt, between two `<paper_text>` lines. Read the instructions first, then read the paper text at the bottom.
+
+## Reading rule (use full text, but ignore distractions)
+- Use the FULL text (main text + captions) to decide what the paper is REALLY about.
+- Determine the PRIMARY research target object and the PRIMARY deliverable/result.
+- Do NOT be misled by background, related-work, or instrumentation descriptions.
+- Do NOT infer any information from missing figure panels; rely only on provided text and captions.
+
+## L2 (Target Gate): Is the PRIMARY research target a superconducting MATERIAL?
+Set L2=1 only if BOTH are true:
+(1) The PRIMARY research target is a superconducting MATERIAL (a specific superconductor system/composition/doping series), AND
+(2) The PRIMARY deliverable is intrinsic MATERIAL superconductivity physics/parameters
+    (e.g., Tc, Hc2, penetration depth/superfluid density, gap, vortices, anisotropy, phase diagram).
+
+Set L2=0 only if the paper's primary objective/deliverable clearly matches one of the cases below (ignore background/related-work/incidental mentions):
+(a) Superconductor mainly used as probe/contact to study a NON-superconducting target material/property.
+(b) Superconducting quantum computing (qubits, circuit-QED, gates, readout, T1/T2).
+(c) Engineered superconducting device/circuit performance/functionality as the deliverable
+    (Q/noise/gain/bandwidth/yield/responsivity, etc.).
+(d) Engineering-scale superconductors/applications (cables, quench, AC loss, manufacturing/standards).
+(e) Interface/proximity platforms where novelty is induced SC / Andreev / transparency in a non-SC layer,
+    not intrinsic material parameters of a superconductor for a materials-physics database.
+
+Interface tie-breaker:
+- If the main novelty/result is induced SC in a non-SC material or interface transparency/Andreev physics -> L2=0.
+- If the interface is incidental and the deliverable is intrinsic superconductor material properties -> L2=1.
+
+Precision rule for L2:
+- If uncertain, set L2=0.
+
+## L3 (Information Gate): Is there extractable Section0/Section1-like information? (independent of L2)
+L3 checks whether the paper contains extractable information suitable for downstream Section0/Section1 key-value extraction.
+
+Set L3=1 only if BOTH are true:
+(1) Section0-identification hit exists: section0_hits has >=1 item, AND
+(2) Section1-parameter hit exists: section1_hits has >=1 item, and the hit(s) are backed by explicit values/ranges/units
+    stated in text/captions (not guessed from figures).
+
+Otherwise set L3=0.
+
+### L3 Information checklist (count as hits; labels MUST be copied verbatim)
+
+A) Section0-identification hits (need >=1):
+- chemical_formula_or_system
+- doping_or_stoichiometry
+- sample_form_or_geometry
+- phase_diagram_SC (must cite a figure/table identifier in text/captions)
+
+B) Section1-parameter hits (need >=1; MUST be explicit value/range/units in text/captions):
+- Tc
+- Hc2_or_Hc_or_dHc2dT
+- xi_or_anisotropy (ONLY if explicitly stated)
+- lambda_or_rhos
+- Ic_or_Jc
+- superconducting_pressure
+- gap_or_pairing_signature (tied to described data in text/captions)
+- vortex_quantitative
+
+Method-paper exception (still requires BOTH A and B hits):
+- If the paper is mainly a measurement/method/platform paper, it can still have L3=1, but it MUST still satisfy the same decision rule: >=1 Section0-identification hit AND >=1 explicit Section1-parameter hit for an identifiable superconductor.
+
+Decision rule for L3:
+- L3=1 iff (A has >=1 hit) AND (B has >=1 hit).
+- Else L3=0.
+
+Label rule (important):
+- section0_hits and section1_hits MUST use ONLY the exact label strings shown in the checklist above.
+- Copy labels exactly (same spelling, underscores). Do NOT paraphrase. Do NOT invent new labels.
+- Include each label at most once (no duplicates).
+
+Precision rule for L3:
+- If uncertain, set L3=0.
+
+## Output format (JSON only; no extra text)
+Return exactly one JSON object (always include all keys; use [] when absent):
+
+{
+  "L2": 0 or 1,
+  "L3": 0 or 1,
+  "section0_hits": [],
+  "section1_hits": []
+}
+
+## Paper text 
+<paper_text>
+<paper_text>

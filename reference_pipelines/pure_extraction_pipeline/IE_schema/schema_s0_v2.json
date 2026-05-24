@@ -1,0 +1,47 @@
+{
+	"section0": {
+		"electronic_state_tuning_mechanism": [
+			{
+				"tuning_type": null,
+				"dopant_defect": null,
+				"parameter": null,
+				"stoichiometry": null,
+				"carrier_effect": null
+			}
+		],
+		"carrier_concentration": [
+			{
+				"level": null,
+				"unit": null,
+				"basis": null,
+				"conditions": null
+			}
+		],
+		"secondary_phases": [
+			{
+				"phase": null,
+				"role": null,
+				"fraction": {
+					"value": null,
+					"unit": null
+				}
+			}
+		],
+		"stack_descriptor": [
+			{
+				"architecture": null,
+				"layers": [
+					{
+						"material": null,
+						"thickness": null,
+						"unit": null,
+						"role": null
+					}
+				],
+				"periodicity": null,
+				"notes": null
+			}
+		]
+	}
+}
+

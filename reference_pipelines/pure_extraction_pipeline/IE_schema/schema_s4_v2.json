@@ -1,0 +1,149 @@
+{
+  "section4": {
+    "R_T": [
+      {
+        "figure": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "current": [],
+        "current_direction": null,
+        "raw_data": null
+      }
+    ],
+    "R_H": [
+      {
+        "figure": [],
+        "temperature": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "current": [],
+        "current_direction": null,
+        "raw_data": null
+      }
+    ],
+    "I_V": [
+      {
+        "figure": [],
+        "temperature": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "current": [],
+        "current_direction": null,
+        "raw_data": null
+      }
+    ],
+    "specific_heat": [
+      {
+        "figure": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "raw_data": null
+      }
+    ],
+    "M_T": [
+      {
+        "figure": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "field_cooling": [],
+        "magnetometer": [],
+        "raw_data": null
+      }
+    ],
+    "chi_T": [
+      {
+        "figure": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "frequency": [],
+        "raw_data": null
+      }
+    ],
+    "PDO": [
+      {
+        "figure": [],
+        "variable": null,
+        "temperature": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "current": [],
+        "current_direction": null,
+        "raw_data": null
+      }
+    ],
+    "thermal_conductivity": [
+      {
+        "figure": [],
+        "variable": null,
+        "temperature": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "current": [],
+        "current_direction": null,
+        "raw_data": null
+      }
+    ],
+    "nernst_effect": [
+      {
+        "figure": [],
+        "signal": null,
+        "variable": null,
+        "temperature": [],
+        "magnetic_field": [],
+        "magnetic_direction": null,
+        "magnetic_direction_reference": null,
+        "pressure": [],
+        "angles": [],
+        "angles_reference": null,
+        "current": [],
+        "current_direction": null,
+        "raw_data": null
+      }
+    ],
+    "others": [
+      {
+        "name": null,
+        "figure": null,
+        "detail": {
+          "independent_variable": null,
+          "dependent_variable": null,
+          "conditions": null,
+          "result": null
+        },
+        "raw_data": null
+      }
+    ]
+  }
+}

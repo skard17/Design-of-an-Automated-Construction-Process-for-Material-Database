@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 DEFAULT_BASE_URL = "https://chat.iphy.ac.cn/litellm/v1"
-DEFAULT_MODEL = os.getenv("CODE_AGENT_MODEL", "deepseek-v4-pro")
+DEFAULT_MODEL = os.getenv("CODE_AGENT_MODEL", "kimi-k2.6")
 DEFAULT_SYSTEM_PROMPT = (
     "You are a senior Python coding agent for scientific extraction workflows. "
     "Return valid JSON only."
@@ -37,6 +37,10 @@ REQUIRED_MODULES = (
 MODEL_ALIASES = {
     "deepseek-v4": "deepseek-v4-pro",
 }
+BLOCKING_JUDGEMENT_STATUSES = {
+    "blocked_by_quality_review",
+    "quality_review_failed",
+}
 
 
 def json_dumps(value, max_chars=None):
@@ -47,7 +51,13 @@ def json_dumps(value, max_chars=None):
 
 
 def load_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    json_path = Path(path)
+    if not json_path.exists():
+        raise FileNotFoundError(
+            f"Input JSON not found: {json_path}. "
+            "Pass a Step 9 prompt package with --prompt-output."
+        )
+    return json.loads(json_path.read_text(encoding="utf-8"))
 
 
 def walk_strings(value, path="$"):
@@ -588,6 +598,20 @@ def write_generated_files(response, output_dir):
     return written
 
 
+def build_blocked_code_response(judgement, reason):
+    return {
+        "status": "blocked",
+        "diagnosis": [reason],
+        "judgement_status": judgement.get("status"),
+        "code_change_plan": [],
+        "generated_files": [],
+        "manual_review_notes": [
+            "Resolve the judgement blocker before running the code-generation agent.",
+            "Use --allow-code-generation-on-failed-judgement only for debugging."
+        ],
+    }
+
+
 def run(args):
     prompt_output = load_json(args.prompt_output)
     judgement = judge_prompt_package(prompt_output)
@@ -617,6 +641,24 @@ def run(args):
 
     if args.judge_only:
         return {"judgement": judgement, "code_agent": None}
+
+    if (
+        judgement.get("status") in BLOCKING_JUDGEMENT_STATUSES
+        and not args.allow_code_generation_on_failed_judgement
+    ):
+        blocked_response = build_blocked_code_response(
+            judgement,
+            f"Code generation blocked because judgement.status is {judgement.get('status')!r}.",
+        )
+        response_path = Path(args.code_agent_output)
+        response_path.write_text(json_dumps(blocked_response), encoding="utf-8")
+        print(f"Saved blocked code-agent response to {response_path}")
+        return {
+            "judgement": judgement,
+            "quality_review": quality_review,
+            "code_agent": blocked_response,
+            "written_files": [],
+        }
 
     target_files = args.target_files or ["code/prompt_quality_code_agent.py", "code/downstream_extraction_runner.py"]
     prompt = build_code_agent_prompt(prompt_output, judgement, target_files)
@@ -667,6 +709,11 @@ def build_parser():
     )
     parser.add_argument("--write-generated-files", action="store_true")
     parser.add_argument("--generated-output-dir", default="generated_code")
+    parser.add_argument(
+        "--allow-code-generation-on-failed-judgement",
+        action="store_true",
+        help="Debug escape hatch: run code generation even when Step 10 judgement has a blocking status.",
+    )
     return parser
 
 

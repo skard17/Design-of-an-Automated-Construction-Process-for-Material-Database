@@ -1,0 +1,149 @@
+{
+  "section4": {
+    "R_T": [
+      {
+        "figure": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "current": ["string"],
+        "current_direction": "string",
+        "raw_data": "string"
+      }
+    ],
+    "R_H": [
+      {
+        "figure": ["string"],
+        "temperature": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "current": ["string"],
+        "current_direction": "string",
+        "raw_data": "string"
+      }
+    ],
+    "I_V": [
+      {
+        "figure": ["string"],
+        "temperature": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "current": ["string"],
+        "current_direction": "string",
+        "raw_data": "string"
+      }
+    ],
+    "specific_heat": [
+      {
+        "figure": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "raw_data": "string"
+      }
+    ],
+    "M_T": [
+      {
+        "figure": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "field_cooling": ["string"],
+        "magnetometer": ["string"],
+        "raw_data": "string"
+      }
+    ],
+    "chi_T": [
+      {
+        "figure": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "frequency": ["string"],
+        "raw_data": "string"
+      }
+    ],
+    "PDO": [
+      {
+        "figure": ["string"],
+        "variable": "string",
+        "temperature": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "current": ["string"],
+        "current_direction": "string",
+        "raw_data": "string"
+      }
+    ],
+    "thermal_conductivity": [
+      {
+        "figure": ["string"],
+        "variable": "string",
+        "temperature": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "current": ["string"],
+        "current_direction": "string",
+        "raw_data": "string"
+      }
+    ],
+    "nernst_effect": [
+      {
+        "figure": ["string"],
+        "signal": "string",
+        "variable": "string",
+        "temperature": ["string"],
+        "magnetic_field": ["string"],
+        "magnetic_direction": "string",
+        "magnetic_direction_reference": "string",
+        "pressure": ["string"],
+        "angles": ["string"],
+        "angles_reference": "string",
+        "current": ["string"],
+        "current_direction": "string",
+        "raw_data": "string"
+      }
+    ],
+    "others": [
+      {
+        "name": "string",
+        "figure": "string",
+        "detail": {
+          "independent_variable": "string",
+          "dependent_variable": "string",
+          "conditions": "string",
+          "result": "string"
+        },
+        "raw_data": "string"
+      }
+    ]
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "section4": {
+    "R_T": {
+      "figure": 0,
+      "magnetic field": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "current direction": 2,
+      "current": 2,
+      "raw data": 0
+    },
+    "R_H": {
+      "figure": 0,
+      "magnetic field": 2,
+      "temperature": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "current direction": 2,
+      "current": 2,
+      "raw data": 0
+    },
+    "I_V": {
+      "figure": 0,
+      "temperature": 2,
+      "magnetic field": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "current direction": 2,
+      "current": 2,
+      "raw data": 0
+    },
+    "specific_heat": {
+      "figure": 0,
+      "magnetic field": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "pressure": 2,
+      "raw data": 0
+    },
+    "M_T": {
+      "figure": 0,
+      "magnetic field": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "field cooling": 0,
+      "magnetometer": 0,
+      "raw data": 0
+    },
+    "chi_T": {
+      "figure": 0,
+      "magnetic field": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "frequency": 2,
+      "raw data": 0
+    },
+    "PDO": {
+      "figure": 0,
+      "variable": 0,
+      "magnetic field": 2,
+      "temperature": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "current direction": 2,
+      "current": 2,
+      "raw data": 0
+    },
+    "thermal_conductivity": {
+      "figure": 0,
+      "variable": 0,
+      "magnetic field": 2,
+      "temperature": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "current direction": 2,
+      "current": 2,
+      "raw data": 0
+    },
+    "nernst_effect": {
+      "figure": 0,
+      "signal": 2,
+      "variable": 0,
+      "magnetic field": 2,
+      "temperature": 2,
+      "pressure": 2,
+      "magnetic direction": 2,
+      "magnetic direction reference": 2,
+      "angles": 2,
+      "angles reference": 2,
+      "current direction": 2,
+      "current": 2,
+      "raw data": 0
+    },
+    "others": [
+      {
+        "name": 0,
+        "figure": 0,
+        "detail": {
+          "independent_variable": 2,
+          "dependent_variable": 2,
+          "conditions": 2,
+          "result": 3
+        },
+        "raw data": 0
+      }
+    ]
+  }
+}

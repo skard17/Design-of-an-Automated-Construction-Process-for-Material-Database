@@ -1,0 +1,96 @@
+{
+  "section1": {
+    "Tc": [
+      {
+        "value": "string",
+        "magnetic_field": "string",
+        "pressure": "string",
+        "direction": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ],
+    "Jc": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "magnetic_field": "string",
+        "pressure": "string",
+        "direction": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ],
+    "Hc1": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "pressure": "string",
+        "direction": "string",
+        "figure": "string"
+        ,
+        "characteristics": "string"
+      }
+    ],
+    "Hc2": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "pressure": "string",
+        "direction": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ],
+    "Hc": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "pressure": "string",
+        "direction": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ],
+    "P_sc": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "magnetic_field": "string",
+        "direction": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ],
+    "P_nsc": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "magnetic_field": "string",
+        "direction": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ],
+    "lambda": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "magnetic_field": "string",
+        "pressure": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ],
+    "xi": [
+      {
+        "value": "string",
+        "temperature": "string",
+        "magnetic_field": "string",
+        "pressure": "string",
+        "figure": "string",
+        "characteristics": "string"
+      }
+    ]
+  }
+}

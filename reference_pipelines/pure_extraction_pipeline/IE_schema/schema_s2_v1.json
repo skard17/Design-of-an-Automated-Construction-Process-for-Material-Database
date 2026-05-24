@@ -1,0 +1,10 @@
+{
+  "section2": [
+    {
+      "method": "string",
+      "description": "string",
+      "geometry": ["string"],
+      "conditions": {}
+    }
+  ]
+}

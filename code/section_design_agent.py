@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 from openai import OpenAI
@@ -31,6 +32,26 @@ DEFAULT_SYSTEM_PROMPT = "You are an expert in scientific database schema design.
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 DEFAULT_LLM_BACKEND = "openai"
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 180
+
+MATERIAL_SCHEMA_ROOTS = {
+    "paper_info",
+    "primary_signature",
+    "primary_signature_normalized",
+    "material_info",
+    "section5",
+    "normalization_aliases",
+    "material_name_aliases",
+    "formula_aliases",
+    "sample_id_aliases",
+}
+
+SUPERVISOR_ALLOWED_EXTENSION_ROOTS = {
+    "device_info",
+    "reaction_info",
+    "dataset_info",
+    "interface_info",
+}
 
 MODULE_SCHEMAS = {
     "locating_module": {
@@ -281,9 +302,9 @@ MODULE_SCHEMAS = {
 }
 
 
-def get_client(base_url=None, api_key=None, backend=DEFAULT_LLM_BACKEND):
+def get_client(base_url=None, api_key=None, backend=DEFAULT_LLM_BACKEND, timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS):
     if backend == "langchain":
-        return get_langchain_client(base_url=base_url, api_key=api_key)
+        return get_langchain_client(base_url=base_url, api_key=api_key, timeout=timeout)
     if backend != "openai":
         raise ValueError(f"Unsupported LLM backend: {backend}")
 
@@ -292,10 +313,12 @@ def get_client(base_url=None, api_key=None, backend=DEFAULT_LLM_BACKEND):
         kwargs["base_url"] = base_url
     if api_key:
         kwargs["api_key"] = api_key
+    if timeout:
+        kwargs["timeout"] = timeout
     return {"backend": "openai", "client": OpenAI(**kwargs)}
 
 
-def get_langchain_client(base_url=None, api_key=None):
+def get_langchain_client(base_url=None, api_key=None, timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS):
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as exc:
@@ -309,6 +332,7 @@ def get_langchain_client(base_url=None, api_key=None):
         "chat_model_cls": ChatOpenAI,
         "base_url": base_url,
         "api_key": api_key,
+        "timeout": timeout,
     }
 
 
@@ -323,6 +347,8 @@ def build_langchain_chat_model(client, model, temperature):
         common_kwargs["api_key"] = client["api_key"]
     if client.get("base_url"):
         common_kwargs["base_url"] = client["base_url"]
+    if client.get("timeout"):
+        common_kwargs["request_timeout"] = client["timeout"]
 
     try:
         return chat_model_cls(**common_kwargs)
@@ -407,9 +433,18 @@ def load_reference_paper_context(reference_papers, max_chars_per_paper=12000):
     return "\n\n".join(paper_blocks)
 
 
+def strip_markdown_json_fence(raw_response):
+    text = (raw_response or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+    return text
+
+
 def parse_json_response(raw_response):
+    cleaned_response = strip_markdown_json_fence(raw_response)
     try:
-        return json.loads(raw_response), []
+        return json.loads(cleaned_response), []
     except json.JSONDecodeError as exc:
         return None, [f"Invalid JSON response: {exc}"]
 
@@ -504,6 +539,42 @@ def validate_module_result(module_name, result):
     if module_name == "schema_design_module":
         if not isinstance(result.get("field_registry"), list) or not result.get("field_registry"):
             errors.append("schema_design_module.field_registry must be a non-empty list")
+        else:
+            field_paths = [
+                str(item.get("field_path", ""))
+                for item in result.get("field_registry", [])
+                if isinstance(item, dict)
+            ]
+            top_keys = [
+                str(item.get("key", ""))
+                for item in result.get("top_level_keys", [])
+                if isinstance(item, dict)
+            ]
+            unapproved_roots = sorted(
+                {
+                    path.split(".", 1)[0]
+                    for path in [*field_paths, *top_keys]
+                    if path.split(".", 1)[0]
+                    and path.split(".", 1)[0] not in MATERIAL_SCHEMA_ROOTS
+                    and path.split(".", 1)[0] not in SUPERVISOR_ALLOWED_EXTENSION_ROOTS
+                }
+            )
+            material_hits = [
+                path
+                for path in field_paths
+                if path.split(".", 1)[0] in MATERIAL_SCHEMA_ROOTS
+                or path.startswith("material_info.section")
+            ]
+            if unapproved_roots:
+                errors.append(
+                    "schema_design_module contains schema roots not approved by the Step 8 section plan "
+                    f"{unapproved_roots}; the supervisor/checker must discard or justify them"
+                )
+            if len(material_hits) < 12:
+                errors.append(
+                    "schema_design_module lacks enough materials-database fields under "
+                    "paper_info/material_info/section5/primary_signature"
+                )
     if module_name == "specialization_critic_module":
         if result.get("specialization_status") not in {"pass", "needs_redesign"}:
             errors.append("specialization_critic_module.specialization_status must be pass or needs_redesign")
@@ -763,6 +834,13 @@ def validate_specialization(shared_context, modules, result):
     field_paths = [field.get("field_path", "") for field in field_registry if isinstance(field, dict)]
     field_paths_lower = [item.lower() for item in field_paths]
 
+    # Generic validation only: domain-specific validators should live in
+    # opt-in profiles, not in the default Step 8 workflow.
+    if any("图表" in str(req) or "chart" in str(req).lower() for req in shared_context.get("query_requirements", [])):
+        if not any("evidence" in path for path in field_paths_lower):
+            errors.append("query coverage weak: chart-evidence retrieval requested but no evidence-linked field found")
+    return errors
+
     if "skyrmion" in database_goal or "斯格明子" in shared_context.get("database_goal", ""):
         required_pattern_groups = {
             "inversion_symmetry_broken": ["inversion_symmetry_broken"],
@@ -817,165 +895,30 @@ def infer_figure_constraint(field):
     allowed_categories = []
     why_needed = ""
 
-    if path_lower == "section_magnetic_topology.phase_type" or (
-        "section_skx" in path_lower
-        or "section_skyrmion" in path_lower
-        or "skyrmion_phases" in path_lower
-        or "section_magnetic_topology" in path_lower
-        or section_lower == "skyrmion_phases"
-        or section_lower == "section_magnetic_topology"
-    ):
-        if any(token in path_lower for token in ["topological_hall", "critical_field", "rho_xy", "phase_window"]):
-            allowed_sections = ["section4_mt", "topological_transport", "supporting_magnetic_properties"]
-            allowed_categories = ["rho_xy_H", "phase_diagram_plot", "M_H", "hall_curve", "topological_hall"]
-            why_needed = "This field records a skyrmion conclusion derived from transport, magnetization, or phase-diagram evidence."
-        elif any(token in path_lower for token in ["helical_period", "skyrmion_size", "evidence", "stability_window", "phase_diagram", "extracted_parameters"]):
-            allowed_sections = [
-                "section3",
-                "section4_mt",
-                "magnetic_topology_characterization",
-                "topological_transport",
-                "supporting_magnetic_properties",
-            ]
-            allowed_categories = ["LTEM", "MFM", "SANS", "SP_STM", "rho_xy_H", "phase_diagram_plot", "hall_curve"]
-            why_needed = "This field records a skyrmion conclusion or evidence link that must point to allowed imaging or transport evidence figures."
-        else:
-            allowed_sections = [
-                "section3",
-                "section4_mt",
-                "magnetic_topology_characterization",
-                "topological_transport",
-                "supporting_magnetic_properties",
-            ]
-            allowed_categories = ["LTEM", "MFM", "rho_xy_H", "M_H", "phase_diagram_plot", "hall_curve", "SANS"]
-            why_needed = "This field references evidence figures owned by skyrmion evidence sections."
-    elif "magnetic_topology_characterization" in path_lower or section_lower == "magnetic_topology_characterization":
-        allowed_sections = ["magnetic_topology_characterization", "section3", "section_magnetic_imaging", "section_magnetic_diffraction"]
-        if any(token in path_lower for token in ["ltem", "skyrmion_diameter", "size", "diameter"]):
-            allowed_categories = ["LTEM", "MFM", "SP_STM"]
-        elif any(token in path_lower for token in ["sans", "scattering", "q_vector", "period", "reciprocal"]):
-            allowed_categories = ["SANS", "REXS", "diffraction_pattern"]
-        else:
-            allowed_categories = ["LTEM", "MFM", "SANS", "REXS", "SP_STM", "diffraction_pattern"]
-        why_needed = "This field belongs to magnetic imaging or scattering evidence and must keep ownership in the characterization section."
-    elif "topological_transport" in path_lower or section_lower == "topological_transport":
-        allowed_sections = ["topological_transport", "section4_mt", "section4_topological_transport"]
-        if any(token in path_lower for token in ["hall", "rho_xy", "signal_peak", "peak_field"]):
-            allowed_categories = ["topological_hall", "rho_xy_H", "hall_curve", "transport_phase_diagram"]
-        else:
-            allowed_categories = ["rho_xy_H", "hall_curve", "transport_phase_diagram"]
-        why_needed = "This field belongs to topological transport evidence and must preserve Hall-curve ownership."
-    elif "supporting_magnetic_properties" in path_lower or section_lower == "supporting_magnetic_properties":
-        allowed_sections = ["supporting_magnetic_properties", "section4_mt", "section4_magnetization"]
-        allowed_categories = ["M_H", "M_T", "magnetization_phase_diagram", "phase_diagram_plot"]
-        why_needed = "This field belongs to supporting bulk magnetic evidence and must preserve magnetization-curve ownership."
-    elif "material_info.general" in path_lower or section_lower in {"material_info.general", "material_general"}:
-        allowed_sections = ["material_info.general", "material_general", "section0"]
-        allowed_categories = ["XRD", "TEM", "crystal_structure_diagram"]
-        why_needed = "This field belongs to general material or structural context and may depend on structure figures."
-    elif "section1." in path_lower or section_lower == "section1":
-        allowed_sections = ["section4_mt", "section3"]
-        if "saturation_magnetization" in path_lower:
-            allowed_categories = ["M_H", "M_T"]
-        elif "anisotropy" in path_lower:
-            allowed_categories = ["M_H", "M_T", "LTEM", "MFM"]
-        elif "critical_field" in path_lower:
-            allowed_categories = ["rho_xy_H", "M_H", "phase_diagram_plot"]
-        else:
-            allowed_categories = ["M_H", "M_T", "rho_xy_H"]
-        why_needed = "This magnetic-property field is inferred from allowed experimental evidence and must preserve figure ownership boundaries."
-    elif "section0" in path_lower or section_lower == "section0":
-        allowed_sections = ["section0", "section3", "section_magnetic_imaging", "section_magnetic_diffraction", "material_general", "material_info.general"]
-        if "stack_descriptor" in path_lower:
-            allowed_categories = ["crystal_structure_diagram", "TEM", "XRD", "LTEM", "SANS"]
-            why_needed = "This structural descriptor may be tied to structure or morphology figures and must preserve the originating evidence section."
-        else:
-            allowed_categories = ["crystal_structure_diagram", "TEM", "XRD"]
-            why_needed = "This section0 field references structural or morphology evidence and must preserve figure ownership boundaries."
-    elif (
-        "section2.topological_hall" in path_lower
-        or "section2.topological_hall" in path_lower.replace("_", "")
-        or "section2.topological_transport_evidence" in path_lower
-    ):
-        allowed_sections = ["section2", "section4", "section4_topological_transport"]
-        allowed_categories = ["topological_hall", "rho_xy_H", "hall_curve"]
-        why_needed = "This field belongs to a topological Hall evidence record and must preserve transport-curve figure ownership."
-    elif "section4_mt" in path_lower or section_lower == "section4_mt":
-        allowed_sections = ["section4_mt"]
-        if "rho_xy_h" in path_lower:
-            allowed_categories = ["rho_xy_H"]
-        elif "m_h" in path_lower:
-            allowed_categories = ["M_H"]
-        else:
-            allowed_categories = ["rho_xy_H", "M_H", "phase_diagram_plot"]
-        why_needed = "This field belongs to a transport or magnetization figure-owning section and must stay within section4_mt."
-    elif "section4_topological_transport" in path_lower or section_lower == "section4_topological_transport":
-        allowed_sections = ["section4_topological_transport"]
-        allowed_categories = ["rho_xy_H", "hall_curve", "transport_phase_diagram"]
-        why_needed = "This field belongs to the topological transport evidence-owning section and must stay within section4_topological_transport."
-    elif "section4.topological_hall" in path_lower:
-        allowed_sections = ["section4", "section4_topological_transport"]
-        allowed_categories = ["topological_hall", "rho_xy_H", "hall_curve"]
-        why_needed = "This field belongs to the dedicated topological Hall evidence within section4 and must preserve transport-curve figure ownership."
-    elif "section4_magnetization" in path_lower or section_lower == "section4_magnetization":
-        allowed_sections = ["section4_magnetization"]
-        allowed_categories = ["M_H", "M_T", "magnetization_phase_diagram"]
-        why_needed = "This field belongs to the magnetization evidence-owning section and must stay within section4_magnetization."
-    elif "material_info.section4." in path_lower or path_lower.startswith("section4."):
-        allowed_sections = ["section4"]
-        if ".topological_hall" in path_lower:
-            allowed_categories = ["topological_hall", "rho_xy_H", "hall_curve"]
-            why_needed = "This field belongs to the dedicated topological Hall evidence within section4 and must preserve transport-curve figure ownership."
-        elif ".m_h" in path_lower:
-            allowed_categories = ["M_H", "magnetization_phase_diagram"]
-            why_needed = "This field belongs to magnetization evidence within section4 and must preserve M-H figure ownership."
-        elif ".r_h" in path_lower:
-            allowed_categories = ["R_H", "rho_xy_H", "hall_curve"]
-            why_needed = "This field belongs to Hall or magnetotransport evidence within section4 and must preserve section4 figure ownership."
-        else:
-            allowed_categories = ["topological_hall", "rho_xy_H", "R_H", "M_H", "phase_diagram_plot"]
-            why_needed = "This field belongs to section4 physical-property evidence and must preserve section-owned figure boundaries."
-    elif "material_info.section_sk." in path_lower or path_lower.startswith("section_sk."):
-        if any(token in path_lower for token in ["topological_transport", "topological_hall", "resistivity"]):
-            allowed_sections = ["section_sk", "section4", "section4_mt", "section4_topological_transport"]
-            allowed_categories = ["topological_hall", "rho_xy_H", "hall_curve", "transport_phase_diagram"]
-            why_needed = "This section_sk transport field must point to topological Hall evidence while preserving figure ownership boundaries."
-        elif any(token in path_lower for token in ["critical_formation_field", "critical_annihilation_field", "stability_conditions", "temperature_stability_range"]):
-            allowed_sections = ["section_sk", "section4", "section4_mt"]
-            allowed_categories = ["phase_diagram_plot", "M_H", "M_T", "rho_xy_H", "topological_hall"]
-            why_needed = "This section_sk stability or critical-field field must point to the phase-diagram, magnetization, or transport figure used to read the boundary."
-        elif any(token in path_lower for token in ["skyrmion_size", "helical_period", "skyrmion_density", "phase_identity"]):
-            allowed_sections = ["section_sk", "section3", "section_magnetic_imaging", "section_magnetic_diffraction"]
-            allowed_categories = ["LTEM", "MFM", "SANS", "REXS", "SP_STM", "diffraction_pattern"]
-            why_needed = "This section_sk phase or extracted-parameter field must point to direct imaging or magnetic-structure evidence."
-        else:
-            allowed_sections = ["section_sk", "section3", "section4", "section5"]
-            allowed_categories = ["LTEM", "MFM", "SANS", "REXS", "rho_xy_H", "M_H", "phase_diagram_plot", "simulation_figures"]
-            why_needed = "This section_sk field is figure-linked and must preserve the evidence section that owns the source figure."
-    elif "section3" in path_lower or section_lower == "section3":
-        allowed_sections = ["section3"]
-        allowed_categories = ["LTEM", "MFM", "SANS", "SP_STM", "TEM", "XRD"]
-        why_needed = "This field belongs to an imaging or diffraction figure-owning section and must stay within section3."
-    elif "section_magnetic_imaging" in path_lower or section_lower == "section_magnetic_imaging":
-        allowed_sections = ["section_magnetic_imaging"]
-        allowed_categories = ["LTEM", "MFM", "SP_STM", "XMCD_PEEM"]
-        why_needed = "This field belongs to the magnetic imaging evidence-owning section and must stay within section_magnetic_imaging."
-    elif "section_magnetic_diffraction" in path_lower or section_lower == "section_magnetic_diffraction":
-        allowed_sections = ["section_magnetic_diffraction"]
-        allowed_categories = ["SANS", "REXS", "diffraction_pattern"]
-        why_needed = "This field belongs to the magnetic diffraction evidence-owning section and must stay within section_magnetic_diffraction."
-    elif "section5" in path_lower or section_lower == "section5":
-        allowed_sections = ["section5"]
-        allowed_categories = ["simulation_figures", "theoretical_model", "phase_diagram_simulation"]
-        why_needed = "This field belongs to theory or simulation evidence and must stay within section5."
-    elif path_lower.startswith("theory_mechanism.") or section_lower == "theory_mechanism":
-        allowed_sections = ["theory_mechanism"]
-        allowed_categories = ["simulation_figures", "theoretical_model", "phase_diagram_simulation", "calculation_result_plot"]
-        why_needed = "This field belongs to the theory_mechanism evidence-owning section and must stay within theory_mechanism."
-    elif path_lower.startswith("simulation_info.") or section_lower == "simulation_info":
-        allowed_sections = ["simulation_info"]
-        allowed_categories = ["simulation_figures", "phase_diagram_simulation", "calculation_result_plot", "simulation_spin_texture"]
-        why_needed = "This field belongs to the simulation_info evidence-owning section and must preserve simulation figure ownership."
+    if section_id:
+        allowed_sections = [section_id]
+    elif "." in field_path:
+        allowed_sections = [field_path.rsplit(".", 1)[0]]
+
+    if not allowed_sections:
+        return None
+
+    if path_lower.endswith(".figure"):
+        allowed_categories = ["figure"]
+    elif "table" in path_lower:
+        allowed_categories = ["table"]
+    elif "curve" in path_lower or "plot" in path_lower:
+        allowed_categories = ["curve_or_plot"]
+    elif any(token in path_lower for token in ["image", "microscopy", "xrd", "diffraction", "spectrum"]):
+        allowed_categories = ["characterization_figure"]
+    else:
+        allowed_categories = ["domain_relevant_figure"]
+
+    why_needed = (
+        "This figure-linked field must preserve ownership by the section that "
+        "contains the measured or observed evidence, instead of letting a "
+        "neighboring interpretation section consume the same figure."
+    )
 
     if not allowed_sections:
         return None
@@ -1204,7 +1147,18 @@ def postprocess_result(shared_context, result):
         if not isinstance(field, dict):
             continue
         source_basis = field.get("source_basis") or []
-        if "figure" in source_basis and not isinstance(field.get("figure_constraint"), dict):
+        figure_constraint = field.get("figure_constraint")
+        needs_constraint_repair = not isinstance(figure_constraint, dict)
+        if isinstance(figure_constraint, dict):
+            needs_constraint_repair = (
+                not isinstance(figure_constraint.get("allowed_sections"), list)
+                or not figure_constraint.get("allowed_sections")
+                or not isinstance(figure_constraint.get("allowed_figure_categories"), list)
+                or not figure_constraint.get("allowed_figure_categories")
+                or not isinstance(figure_constraint.get("why_needed"), str)
+                or not figure_constraint.get("why_needed", "").strip()
+            )
+        if "figure" in source_basis and needs_constraint_repair:
             inferred = infer_figure_constraint(field)
             if not inferred:
                 field_path = str(field.get("field_path", ""))
@@ -1218,6 +1172,11 @@ def postprocess_result(shared_context, result):
                     )
             if inferred:
                 field["figure_constraint"] = inferred
+
+    # Default Step 8 postprocessing is intentionally domain-neutral. Any
+    # domain-specific field injection should be implemented as an explicit,
+    # opt-in profile outside this generic workflow.
+    return result
 
     database_goal = str(shared_context.get("database_goal", ""))
     if "斯格明子" in database_goal or "skyrmion" in database_goal.lower():
@@ -1718,7 +1677,29 @@ def call_module(client, model, module_name, prompt, temperature=0, max_retries=1
     result = None
     errors = []
     for round_idx in range(max_retries + 1):
-        raw_response = chat(client, model, current_prompt, temperature=temperature)
+        raw_response = None
+        try:
+            raw_response = chat(client, model, current_prompt, temperature=temperature)
+        except Exception as exc:
+            errors = [f"{type(exc).__name__}: {exc}"]
+            attempts.append(
+                {
+                    "round": round_idx + 1,
+                    "prompt": current_prompt,
+                    "raw_response": None,
+                    "exception": errors[0],
+                }
+            )
+            if round_idx < max_retries:
+                current_prompt = build_module_redo_prompt(
+                    module_name,
+                    errors[0],
+                    errors,
+                    MODULE_SCHEMAS[module_name]["schema_text"],
+                )
+                continue
+            return result, errors, attempts
+
         attempts.append({"round": round_idx + 1, "prompt": current_prompt, "raw_response": raw_response})
         result, parse_errors = parse_json_response(raw_response)
         if parse_errors:
@@ -1736,6 +1717,146 @@ def call_module(client, model, module_name, prompt, temperature=0, max_retries=1
                 MODULE_SCHEMAS[module_name]["schema_text"],
             )
     return result, errors, attempts
+
+
+def compact_shared_context_for_modules(shared_context, key_description_chars=24000, reference_chars=16000):
+    compact = dict(shared_context)
+    if compact.get("key_description_text"):
+        compact["key_description_text"] = _truncate_text(
+            compact["key_description_text"],
+            key_description_chars,
+        )
+    if compact.get("reference_paper_context"):
+        compact["reference_paper_context"] = _truncate_text(
+            compact["reference_paper_context"],
+            reference_chars,
+        )
+    return compact
+
+
+def get_checkpoint_path(args):
+    checkpoint_output = getattr(args, "checkpoint_output", "")
+    if checkpoint_output:
+        return Path(checkpoint_output)
+    output = Path(args.output)
+    return output.with_suffix(output.suffix + ".state.json")
+
+
+def save_pipeline_checkpoint(args, stage, module_outputs, module_attempts, module_errors, result=None, errors=None):
+    checkpoint_path = get_checkpoint_path(args)
+    payload = {
+        "step": "step8_section_design_agent_checkpoint",
+        "stage": stage,
+        "model": getattr(args, "model", ""),
+        "base_url": getattr(args, "base_url", ""),
+        "inputs": {
+            "database_goal": getattr(args, "database_goal", ""),
+            "discipline": getattr(args, "discipline", ""),
+            "query_requirements": getattr(args, "query_requirements", ""),
+            "key_description_path": getattr(args, "key_description_path", ""),
+            "reference_papers": getattr(args, "reference_papers", []),
+        },
+        "module_outputs": module_outputs,
+        "module_errors": module_errors,
+        "result": result,
+        "validation_errors": errors or [],
+        "attempts": {"modules": module_attempts},
+    }
+    checkpoint_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def should_stop_after_module(args, module_name):
+    return getattr(args, "stop_after_module", "") == module_name
+
+
+def stopped_after_module_error(module_name):
+    return f"stopped_after_module: {module_name}"
+
+
+def is_partial_stop(errors):
+    return bool(errors) and len(errors) == 1 and str(errors[0]).startswith("stopped_after_module:")
+
+
+def assemble_final_result_from_modules(
+    shared_context,
+    locating_result,
+    query_result,
+    subjective_result,
+    topic_result,
+    section_result,
+    field_plan_result,
+    supervisor_result,
+    figure_result,
+    schema_result,
+    critic_result,
+):
+    topic_adjustments = list(topic_result.get("topic_specific_adjustments") or [])
+    must_have_concepts = subjective_result.get("must_have_concepts") or []
+    red_flags = subjective_result.get("red_flags") or []
+    if must_have_concepts:
+        topic_adjustments.append("Must-have concepts: " + ", ".join(map(str, must_have_concepts[:8])))
+    if red_flags:
+        topic_adjustments.append("Red flags checked: " + ", ".join(map(str, red_flags[:5])))
+    topic_adjustments.append(
+        "Figure classification enabled: "
+        + str(bool(figure_result.get("enable_figure_classification")))
+        + "; routing: "
+        + str(supervisor_result.get("routing_decision", ""))
+    )
+    topic_adjustments.append(
+        "Specialization critic: "
+        + str(critic_result.get("specialization_status", "unknown"))
+        + "; generic-template risk: "
+        + str(bool(critic_result.get("is_generic")))
+    )
+
+    coverage_check = []
+    for item in query_result.get("query_objects") or []:
+        if not isinstance(item, dict):
+            continue
+        requirement = item.get("query_requirement", "")
+        groups = item.get("recommended_field_groups") or []
+        coverage_check.append(
+            f"{requirement}: covered by {', '.join(map(str, groups[:5]))}"
+            if groups
+            else f"{requirement}: covered by section and field registry design"
+        )
+    if not coverage_check:
+        coverage_check = [
+            "Query requirements are covered by the section architecture, schema field registry, and evidence model."
+        ]
+
+    redo_needed = bool(critic_result.get("redo_needed")) or bool(critic_result.get("is_generic"))
+    redo_reason = ""
+    if redo_needed:
+        redo_reason = "; ".join(map(str, critic_result.get("redo_directives") or []))
+
+    return {
+        "database_positioning": {
+            "database_goal": locating_result.get("database_goal", shared_context.get("database_goal", "")),
+            "discipline": locating_result.get("discipline", shared_context.get("discipline", "")),
+            "query_requirements": locating_result.get(
+                "query_requirements",
+                shared_context.get("query_requirements", []),
+            ),
+            "retrieval_unit": locating_result.get("retrieval_unit", ""),
+            "design_rationale": locating_result.get("design_rationale", ""),
+        },
+        "section_design": {
+            "core_sections": section_result.get("core_sections", []),
+            "non_core_sections": section_result.get("non_core_sections", []),
+        },
+        "schema_definition": {
+            "top_level_keys": schema_result.get("top_level_keys", []),
+            "field_registry": schema_result.get("field_registry", []),
+        },
+        "quality_check": {
+            "topic_specific_adjustments": topic_adjustments,
+            "coverage_check": coverage_check,
+            "redo_needed": redo_needed,
+            "redo_reason": redo_reason,
+        },
+    }
 
 
 def run_pipeline(client, args, shared_context):
@@ -1760,20 +1881,28 @@ def run_pipeline(client, args, shared_context):
     module_outputs["locating_module"] = locating_result
     module_attempts["locating_module"] = locating_attempts
     module_errors["locating_module"] = locating_errors
+    save_pipeline_checkpoint(args, "locating_module", module_outputs, module_attempts, module_errors, errors=locating_errors)
+    if should_stop_after_module(args, "locating_module"):
+        return None, [stopped_after_module_error("locating_module")], module_outputs, module_attempts, module_errors
     if locating_errors:
         return None, locating_errors, module_outputs, module_attempts, module_errors
+
+    module_context = compact_shared_context_for_modules(shared_context)
 
     mechanism_result, mechanism_errors, mechanism_attempts = call_module(
         client,
         args.model,
         "mechanism_requirement_module",
-        build_mechanism_requirement_prompt(shared_context, locating_result),
+        build_mechanism_requirement_prompt(module_context, locating_result),
         temperature=args.temperature,
         max_retries=args.max_retries,
     )
     module_outputs["mechanism_requirement_module"] = mechanism_result
     module_attempts["mechanism_requirement_module"] = mechanism_attempts
     module_errors["mechanism_requirement_module"] = mechanism_errors
+    save_pipeline_checkpoint(args, "mechanism_requirement_module", module_outputs, module_attempts, module_errors, errors=mechanism_errors)
+    if should_stop_after_module(args, "mechanism_requirement_module"):
+        return None, [stopped_after_module_error("mechanism_requirement_module")], module_outputs, module_attempts, module_errors
     if mechanism_errors:
         return None, mechanism_errors, module_outputs, module_attempts, module_errors
 
@@ -1781,13 +1910,16 @@ def run_pipeline(client, args, shared_context):
         client,
         args.model,
         "query_semantics_module",
-        build_query_semantics_prompt(shared_context, locating_result),
+        build_query_semantics_prompt(module_context, locating_result),
         temperature=args.temperature,
         max_retries=args.max_retries,
     )
     module_outputs["query_semantics_module"] = query_result
     module_attempts["query_semantics_module"] = query_attempts
     module_errors["query_semantics_module"] = query_errors
+    save_pipeline_checkpoint(args, "query_semantics_module", module_outputs, module_attempts, module_errors, errors=query_errors)
+    if should_stop_after_module(args, "query_semantics_module"):
+        return None, [stopped_after_module_error("query_semantics_module")], module_outputs, module_attempts, module_errors
     if query_errors:
         return None, query_errors, module_outputs, module_attempts, module_errors
 
@@ -1795,13 +1927,16 @@ def run_pipeline(client, args, shared_context):
         client,
         args.model,
         "evidence_model_module",
-        build_evidence_model_prompt(shared_context, locating_result),
+        build_evidence_model_prompt(module_context, locating_result),
         temperature=args.temperature,
         max_retries=args.max_retries,
     )
     module_outputs["evidence_model_module"] = evidence_result
     module_attempts["evidence_model_module"] = evidence_attempts
     module_errors["evidence_model_module"] = evidence_errors
+    save_pipeline_checkpoint(args, "evidence_model_module", module_outputs, module_attempts, module_errors, errors=evidence_errors)
+    if should_stop_after_module(args, "evidence_model_module"):
+        return None, [stopped_after_module_error("evidence_model_module")], module_outputs, module_attempts, module_errors
     if evidence_errors:
         return None, evidence_errors, module_outputs, module_attempts, module_errors
 
@@ -1810,7 +1945,7 @@ def run_pipeline(client, args, shared_context):
         args.model,
         "subjective_supervisor_module",
         build_subjective_supervisor_prompt(
-            shared_context,
+            module_context,
             locating_result,
             mechanism_result,
             query_result,
@@ -1822,6 +1957,9 @@ def run_pipeline(client, args, shared_context):
     module_outputs["subjective_supervisor_module"] = subjective_result
     module_attempts["subjective_supervisor_module"] = subjective_attempts
     module_errors["subjective_supervisor_module"] = subjective_errors
+    save_pipeline_checkpoint(args, "subjective_supervisor_module", module_outputs, module_attempts, module_errors, errors=subjective_errors)
+    if should_stop_after_module(args, "subjective_supervisor_module"):
+        return None, [stopped_after_module_error("subjective_supervisor_module")], module_outputs, module_attempts, module_errors
     if subjective_errors:
         return None, subjective_errors, module_outputs, module_attempts, module_errors
 
@@ -1829,13 +1967,16 @@ def run_pipeline(client, args, shared_context):
         client,
         args.model,
         "topic_adaptation_module",
-        build_topic_adaptation_prompt(shared_context, locating_result),
+        build_topic_adaptation_prompt(module_context, locating_result),
         temperature=args.temperature,
         max_retries=args.max_retries,
     )
     module_outputs["topic_adaptation_module"] = topic_result
     module_attempts["topic_adaptation_module"] = topic_attempts
     module_errors["topic_adaptation_module"] = topic_errors
+    save_pipeline_checkpoint(args, "topic_adaptation_module", module_outputs, module_attempts, module_errors, errors=topic_errors)
+    if should_stop_after_module(args, "topic_adaptation_module"):
+        return None, [stopped_after_module_error("topic_adaptation_module")], module_outputs, module_attempts, module_errors
     if topic_errors:
         return None, topic_errors, module_outputs, module_attempts, module_errors
 
@@ -1844,7 +1985,7 @@ def run_pipeline(client, args, shared_context):
         args.model,
         "section_partition_module",
         build_section_partition_prompt(
-            shared_context,
+            module_context,
             locating_result,
             mechanism_result,
             query_result,
@@ -1858,6 +1999,9 @@ def run_pipeline(client, args, shared_context):
     module_outputs["section_partition_module"] = section_result
     module_attempts["section_partition_module"] = section_attempts
     module_errors["section_partition_module"] = section_errors
+    save_pipeline_checkpoint(args, "section_partition_module", module_outputs, module_attempts, module_errors, errors=section_errors)
+    if should_stop_after_module(args, "section_partition_module"):
+        return None, [stopped_after_module_error("section_partition_module")], module_outputs, module_attempts, module_errors
     if section_errors:
         return None, section_errors, module_outputs, module_attempts, module_errors
 
@@ -1866,7 +2010,7 @@ def run_pipeline(client, args, shared_context):
         args.model,
         "field_planning_module",
         build_field_planning_prompt(
-            shared_context,
+            module_context,
             locating_result,
             mechanism_result,
             query_result,
@@ -1881,6 +2025,9 @@ def run_pipeline(client, args, shared_context):
     module_outputs["field_planning_module"] = field_plan_result
     module_attempts["field_planning_module"] = field_plan_attempts
     module_errors["field_planning_module"] = field_plan_errors
+    save_pipeline_checkpoint(args, "field_planning_module", module_outputs, module_attempts, module_errors, errors=field_plan_errors)
+    if should_stop_after_module(args, "field_planning_module"):
+        return None, [stopped_after_module_error("field_planning_module")], module_outputs, module_attempts, module_errors
     if field_plan_errors:
         return None, field_plan_errors, module_outputs, module_attempts, module_errors
 
@@ -1914,7 +2061,7 @@ def run_pipeline(client, args, shared_context):
         args.model,
         "supervisor_module",
         build_supervisor_prompt(
-            shared_context,
+            module_context,
             locating_result,
             topic_result,
             section_result,
@@ -1927,6 +2074,9 @@ def run_pipeline(client, args, shared_context):
     module_outputs["supervisor_module"] = supervisor_result
     module_attempts["supervisor_module"] = supervisor_attempts
     module_errors["supervisor_module"] = supervisor_errors
+    save_pipeline_checkpoint(args, "supervisor_module", module_outputs, module_attempts, module_errors, errors=supervisor_errors)
+    if should_stop_after_module(args, "supervisor_module"):
+        return None, [stopped_after_module_error("supervisor_module")], module_outputs, module_attempts, module_errors
     if supervisor_errors:
         return None, supervisor_errors, module_outputs, module_attempts, module_errors
 
@@ -1934,13 +2084,16 @@ def run_pipeline(client, args, shared_context):
         client,
         args.model,
         "figure_classification_module",
-        build_figure_classification_prompt(shared_context, section_result, field_plan_result, supervisor_result),
+        build_figure_classification_prompt(module_context, section_result, field_plan_result, supervisor_result),
         temperature=args.temperature,
         max_retries=args.max_retries,
     )
     module_outputs["figure_classification_module"] = figure_result
     module_attempts["figure_classification_module"] = figure_attempts
     module_errors["figure_classification_module"] = figure_errors
+    save_pipeline_checkpoint(args, "figure_classification_module", module_outputs, module_attempts, module_errors, errors=figure_errors)
+    if should_stop_after_module(args, "figure_classification_module"):
+        return None, [stopped_after_module_error("figure_classification_module")], module_outputs, module_attempts, module_errors
     if figure_errors:
         return None, figure_errors, module_outputs, module_attempts, module_errors
     if supervisor_result.get("enable_figure_classification") != figure_result.get("enable_figure_classification"):
@@ -1957,7 +2110,7 @@ def run_pipeline(client, args, shared_context):
         args.model,
         "schema_design_module",
         build_schema_design_prompt(
-            shared_context,
+            module_context,
             locating_result,
             mechanism_result,
             query_result,
@@ -1975,6 +2128,9 @@ def run_pipeline(client, args, shared_context):
     module_outputs["schema_design_module"] = schema_result
     module_attempts["schema_design_module"] = schema_attempts
     module_errors["schema_design_module"] = schema_errors
+    save_pipeline_checkpoint(args, "schema_design_module", module_outputs, module_attempts, module_errors, errors=schema_errors)
+    if should_stop_after_module(args, "schema_design_module"):
+        return None, [stopped_after_module_error("schema_design_module")], module_outputs, module_attempts, module_errors
     if schema_errors:
         return None, schema_errors, module_outputs, module_attempts, module_errors
 
@@ -1983,7 +2139,7 @@ def run_pipeline(client, args, shared_context):
         args.model,
         "specialization_critic_module",
         build_specialization_critic_prompt(
-            shared_context,
+            module_context,
             mechanism_result,
             query_result,
             evidence_result,
@@ -1998,46 +2154,81 @@ def run_pipeline(client, args, shared_context):
     module_outputs["specialization_critic_module"] = critic_result
     module_attempts["specialization_critic_module"] = critic_attempts
     module_errors["specialization_critic_module"] = critic_errors
+    save_pipeline_checkpoint(args, "specialization_critic_module", module_outputs, module_attempts, module_errors, errors=critic_errors)
+    if should_stop_after_module(args, "specialization_critic_module"):
+        return None, [stopped_after_module_error("specialization_critic_module")], module_outputs, module_attempts, module_errors
     if critic_errors:
         return None, critic_errors, module_outputs, module_attempts, module_errors
 
-    aggregation_prompt = build_aggregation_prompt(
-        shared_context,
-        locating_result,
-        mechanism_result,
-        query_result,
-        evidence_result,
-        subjective_result,
-        topic_result,
-        section_result,
-        field_plan_result,
-        supervisor_result,
-        figure_result,
-        schema_result,
-        critic_result,
-    )
-    final_result, final_errors, aggregation_attempts = call_module(
-        client,
-        args.model,
-        "aggregation",
-        aggregation_prompt,
-        temperature=args.temperature,
-        max_retries=0,
-    )
+    if getattr(args, "use_llm_aggregation", False):
+        aggregation_prompt = build_aggregation_prompt(
+            module_context,
+            locating_result,
+            mechanism_result,
+            query_result,
+            evidence_result,
+            subjective_result,
+            topic_result,
+            section_result,
+            field_plan_result,
+            supervisor_result,
+            figure_result,
+            schema_result,
+            critic_result,
+        )
+        final_result, final_errors, aggregation_attempts = call_module(
+            client,
+            args.model,
+            "aggregation",
+            aggregation_prompt,
+            temperature=args.temperature,
+            max_retries=0,
+        )
+    else:
+        final_result = assemble_final_result_from_modules(
+            shared_context,
+            locating_result,
+            query_result,
+            subjective_result,
+            topic_result,
+            section_result,
+            field_plan_result,
+            supervisor_result,
+            figure_result,
+            schema_result,
+            critic_result,
+        )
+        final_errors = []
+        aggregation_attempts = [
+            {
+                "round": 1,
+                "prompt": "deterministic_aggregation",
+                "raw_response": json.dumps(final_result, ensure_ascii=False),
+            }
+        ]
     module_outputs["aggregation"] = final_result
     module_attempts["aggregation"] = aggregation_attempts
     module_errors["aggregation"] = final_errors
+    save_pipeline_checkpoint(args, "aggregation", module_outputs, module_attempts, module_errors, result=final_result, errors=final_errors)
+    if should_stop_after_module(args, "aggregation"):
+        return None, [stopped_after_module_error("aggregation")], module_outputs, module_attempts, module_errors
     if final_errors:
         return None, final_errors, module_outputs, module_attempts, module_errors
 
     final_result = finalize_result(shared_context, final_result)
     validation_errors = validate_result(final_result)
     validation_errors.extend(validate_specialization(shared_context, module_outputs, final_result))
+    save_pipeline_checkpoint(args, "final_validation", module_outputs, module_attempts, module_errors, result=final_result, errors=validation_errors)
     return final_result, validation_errors, module_outputs, module_attempts, module_errors
 
 
 def run_section_design(args):
-    client = get_client(base_url=args.base_url, api_key=args.api_key, backend=args.llm_backend)
+    client = get_client(
+        base_url=args.base_url,
+        api_key=args.api_key,
+        backend=args.llm_backend,
+        timeout=args.request_timeout,
+    )
     query_requirements = load_query_requirements(args.query_requirements)
     key_description_text = load_key_description_text(args.key_description_path)
     reference_paper_context = load_reference_paper_context(args.reference_papers)
@@ -2087,6 +2278,10 @@ def run_section_design(args):
         "human_advice_required_before_supervisor": args.require_human_advice_before_supervisor,
         "human_advice_provided": bool(human_advice),
     }
+    status = "success" if not errors else "needs_review"
+    if is_partial_stop(errors):
+        status = "partial_success"
+
     output = {
         "step": "step8_section_design_agent",
         "framework": STEP8_FRAMEWORK,
@@ -2096,7 +2291,7 @@ def run_section_design(args):
         "module_errors": module_errors,
         "result": result,
         "validation_errors": errors,
-        "status": "success" if not errors else "needs_review",
+        "status": status,
         "attempts": {
             "modules": module_attempts,
             "final_redo": final_attempts,
@@ -2132,6 +2327,43 @@ def build_parser():
     )
     parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--max-retries", type=int, default=1)
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=float(os.getenv("SECTION_AGENT_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT_SECONDS)),
+        help="Per-request timeout in seconds for OpenAI-compatible chat calls.",
+    )
+    parser.add_argument(
+        "--checkpoint-output",
+        default=os.getenv("SECTION_AGENT_CHECKPOINT_OUTPUT", ""),
+        help="Optional checkpoint JSON path. Defaults to <output>.state.json.",
+    )
+    parser.add_argument(
+        "--stop-after-module",
+        choices=[
+            "",
+            "locating_module",
+            "mechanism_requirement_module",
+            "query_semantics_module",
+            "evidence_model_module",
+            "subjective_supervisor_module",
+            "topic_adaptation_module",
+            "section_partition_module",
+            "field_planning_module",
+            "supervisor_module",
+            "figure_classification_module",
+            "schema_design_module",
+            "specialization_critic_module",
+            "aggregation",
+        ],
+        default="",
+        help="Stop after a module and save partial output. Useful for debugging slow providers.",
+    )
+    parser.add_argument(
+        "--use-llm-aggregation",
+        action="store_true",
+        help="Use the legacy LLM aggregation module instead of deterministic assembly.",
+    )
     parser.add_argument(
         "--require-human-advice-before-supervisor",
         action="store_true",

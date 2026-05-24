@@ -10,8 +10,8 @@ STEP8_FRAMEWORK = textwrap.dedent(
     1. Receive upstream database target, discipline, query requirements, and key-description reference.
     2. Let a subjective supervisor define the modeling position, domain boundaries, and anti-generic constraints.
     3. Infer the database's retrieval unit, comparison granularity, mechanism prerequisites, and evidence structure.
-    4. Design topic-specific sections instead of copying a generic template.
-    5. Split sections into core and non-core sections only after the domain-specific objects are clarified.
+    4. Start from the default six-section materials-database backbone, then adapt fields inside each section to the target domain.
+    5. Split sections into core and non-core sections only after deciding whether the default backbone needs target-specific extension.
     6. Let a figure supervisor review figure-conflict risk after the section and field plans are available.
     7. If needed, classify figures by section first and only then by subsection.
     8. Assemble the schema from section architecture, field planning, and figure-ownership rules.
@@ -24,18 +24,35 @@ STEP8_FRAMEWORK = textwrap.dedent(
 
     Mandatory design constraints:
     - A subjective supervisor must explicitly define the modeling stance before section design starts.
-    - The section layout must be adapted to the database target.
+    - The default material database layout is the six-section backbone: material system/tuning, core parameters/performance, fabrication/processing, microscopic characterization/electronic structure, macroscopic property curves, and theory/mechanism.
+    - The section layout must preserve this backbone for most materials domains unless the supervisor explicitly justifies a domain that does not fit it.
     - Core sections and non-core sections must be explicitly separated.
     - Domain-critical concepts must be surfaced as explicit schema constraints rather than left as descriptive suggestions.
     - A figure supervisor must explicitly review figure-heavy outputs and decide whether a figure classification repair agent should be enabled.
     - If figure-heavy sections may interfere with each other, figures must be split by section before field design.
     - Each field must indicate whether it depends on text, tables, figures, or multiple sources.
     - The design must avoid generic umbrella fields when parameter-level evidence linkage is needed.
-    - For magnetic and skyrmion databases, phase labels must be separated from the evidence used to assign them.
-    - A phase type based only on Hall transport must be marked as low-confidence supporting evidence, not as a high-confidence phase assignment.
-    - DMI, anisotropy, and Hamiltonian parameters must record whether they come from experiment, fitted simulation, DFT, literature assumption, or author interpretation.
+    - Domain claims, labels, and scalar values must be separated from the evidence used to assign or measure them.
+    - Any indirect evidence must be marked as supporting evidence rather than silently promoted to a direct assignment.
+    - Mechanism, model, and fitted parameters must record whether they come from experiment, fitted simulation, first-principles calculation, literature assumption, or author interpretation.
     - The no-figure-classification branch must still produce an explicit stable plan rather than leaving the routing implicit.
-    - The agent must explain why the design is not a direct reuse of a generic materials template.
+    - The agent must explain how the target-domain fields specialize the shared backbone rather than inventing unrelated section semantics.
+    """
+).strip()
+
+
+MATERIAL_DATABASE_SECTION_BACKBONE = textwrap.dedent(
+    """
+    Default materials-database section backbone:
+    - material_info.section0: Material System and Tuning. Identity, composition, doping/substitution, defects, strain, interfaces, sample variants, and other descriptors that define what material or sample is being compared.
+    - material_info.section1: Core Parameters and Performance. Discrete domain-critical scalar values or structured parameter records with value, unit, conditions, provenance, and confidence. This section changes the most by domain.
+    - material_info.section2: Fabrication and Processing. Synthesis, growth, treatment, device fabrication, processing route, method, description, geometry, and conditions such as temperature, time, pressure, atmosphere, and annealing.
+    - material_info.section3: Microscopic Characterization and Electronic/Structural Evidence. Figure-linked evidence from structure, microstructure, phase, spectroscopy, microscopy, diffraction, and electronic-structure characterization.
+    - material_info.section4: Macroscopic Property Curves. Figure-linked curves and maps used to read or support physical-property trends, such as transport, magnetization, thermodynamic, optical, electrochemical, or mechanical curves.
+    - section5: Theory and Mechanism. Mechanism interpretation, model assumptions, fitting, simulation, first-principles calculation, theory figures, and calculated/fitted parameters kept separate from experimental scalar values.
+
+    Use paper_info as a separate top-level owner for bibliographic metadata and resources; do not model paper metadata as one of material_info.section0-section4.
+    If the target is device-, reaction-, dataset-, or interface-centric, the supervisor may add a separate top-level owner such as device_info, reaction_info, dataset_info, or interface_info, but should still preserve the six-section material_info backbone when material records are present.
     """
 ).strip()
 
@@ -54,7 +71,7 @@ FINAL_OUTPUT_SCHEMA_DESCRIPTION = textwrap.dedent(
       "section_design": {
         "core_sections": [
           {
-            "section_id": "section0",
+            "section_id": "material_info.section0",
             "section_name": "string",
             "purpose": "string",
             "why_core": "string",
@@ -90,7 +107,7 @@ FINAL_OUTPUT_SCHEMA_DESCRIPTION = textwrap.dedent(
             "source_basis": ["text", "table", "figure"],
             "figure_constraint": {
               "uses_figure_classification": true,
-              "allowed_sections": ["section4"],
+              "allowed_sections": ["material_info.section4"],
               "allowed_figure_categories": ["R_T"],
               "why_needed": "string"
             },
@@ -141,9 +158,12 @@ def build_shared_context_block(
         {_render_query_requirements(query_requirements)}
 
         Domain reminder:
-        In materials science, common high-level components may include material object, synthesis or processing, characterization, core performance, test conditions, figure results, and mechanism explanation.
-        However, do not directly reuse one template for all targets. An iron-based superconductor database, a magnetic database, and a catalysis database should not share the same section split by default.
-        For figure-heavy section pairs such as section4 and section5, do not let one section freely consume figures from the whole paper before figure ownership is clarified.
+        In materials science, most database tasks should start from a stable six-section backbone and specialize the fields inside each section for the target domain.
+        The backbone is shared, but the material_info.section1 performance fields, material_info.section3 evidence types, material_info.section4 curve types, and section5 mechanisms must be domain-specific.
+        Do not invent a new section numbering scheme unless the supervisor explicitly justifies why the target cannot fit the backbone.
+        For figure-heavy section pairs such as material_info.section4 and section5, do not let one section freely consume figures from the whole paper before figure ownership is clarified.
+
+        {MATERIAL_DATABASE_SECTION_BACKBONE}
 
         Reference key descriptions:
         {key_description_text}
@@ -257,12 +277,9 @@ def build_evidence_model_prompt(shared_context, locating_result):
         - Distinguish direct evidence, indirect evidence, reciprocal-space evidence, and theory/simulation support when relevant.
         - Explain which result types should own figures and which parameter fields should only reference evidence instead of owning whole figures.
         - Highlight generic evidence designs that should be avoided.
-        - For skyrmion or topological magnetic-structure databases, use an evidence confidence ladder:
-          direct imaging plus symmetry/real-space texture evidence is high confidence;
-          reciprocal-space diffraction or phase-diagram consistency is medium confidence;
-          topological Hall or magnetization anomalies alone are low-confidence supporting evidence.
-        - Explicitly state that Hall transport may support a skyrmion claim but must not by itself assign phase_type with high confidence.
-        - Require evidence records to preserve method, observed object, extracted parameter, source figure/table/text, and interpretation risk.
+        - When the database includes inferred labels or states, define an evidence-confidence ladder appropriate to that domain.
+        - Indirect measurements, proxy signals, or fitted interpretations should not be treated as direct evidence unless the domain justifies that mapping.
+        - Require evidence records to preserve method, observed object, extracted parameter, source figure/table/text, measurement conditions, and interpretation risk.
 
         Return valid JSON only:
         {{
@@ -313,8 +330,8 @@ def build_subjective_supervisor_prompt(
         - Explicitly state what kind of generic template this should not collapse into.
         - List must-have concepts that downstream section and field design must preserve.
         - Identify concrete red flags such as umbrella fields, missing mechanism prerequisites, collapsed phase-window logic, or vague evidence ownership.
-        - For magnetic/skyrmion topics, treat phase identity as a claim with evidence grade, not just a label.
-        - Treat DMI and Hamiltonian parameters as provenance-sensitive values: record whether they are measured, fitted, simulated, DFT-derived, assumed, or only discussed.
+        - Treat domain labels and mechanism claims as claims with evidence grade, not just labels.
+        - Treat mechanism and model parameters as provenance-sensitive values: record whether they are measured, fitted, simulated, calculated, assumed, or only discussed.
         - Produce actionable redesign directives, not abstract comments.
 
         Return valid JSON only:
@@ -390,15 +407,23 @@ def build_section_partition_prompt(
         {json.dumps(topic_result, ensure_ascii=False, indent=2)}
 
         Requirements:
-        - Build section boundaries around actual domain objects, not around generic materials-database habits.
+        - Use the default six-section materials-database backbone as the starting section architecture.
+        - Preserve the canonical section ids and meanings for most materials targets: material_info.section0, material_info.section1, material_info.section2, material_info.section3, material_info.section4, and section5.
+        - Adapt the fields inside each section to the target domain rather than redefining what the section numbers mean.
+        - Build additional top-level owners only when the target has a real non-material entity such as device_info, reaction_info, dataset_info, interface_info, or paper_info.
+        - Build section boundaries around actual domain objects when extending the backbone, not around generic materials-database habits.
         - Ensure the section split can host the must-have concepts from the subjective supervisor.
+        - Keep paper metadata under paper_info, not under material_info.section0-section4.
         - Separate state objects, mechanism prerequisites, evidence objects, and paper metadata when they serve different retrieval logic.
+
+        Default backbone to apply unless explicitly overridden:
+        {MATERIAL_DATABASE_SECTION_BACKBONE}
 
         Return valid JSON only:
         {{
           "core_sections": [
             {{
-              "section_id": "section0",
+              "section_id": "material_info.section0",
               "section_name": "string",
               "purpose": "string",
               "why_core": "string",
@@ -464,9 +489,9 @@ def build_field_planning_prompt(
         - Plan field groups and nested objects rather than only flat scalar keys.
         - Avoid umbrella fields such as generic figure catch-alls when parameter-level evidence linkage is more appropriate.
         - Explicitly note which objects require evidence references and which objects should own figures directly.
-        - For skyrmion phase fields, plan a nested phase_identity object with phase_type, assignment_basis, primary_method, supporting_methods, confidence_level, hall_only_risk_flag, and evidence_links.
-        - For DMI and mechanism fields, plan source-sensitive fields such as dmi_source_type, dmi_value, dmi_unit, dmi_estimation_method, dmi_evidence_links, and hamiltonian_terms.
-        - For transport evidence, separate raw Hall/THE observations from phase-type conclusions; Hall-only evidence should trigger a risk flag.
+        - For inferred state or classification fields, plan nested objects with label, assignment_basis, primary_method, supporting_methods, confidence_level, and evidence_links when needed.
+        - For mechanism fields, plan source-sensitive fields that preserve value, unit, estimation_method, source_type, and evidence_links when the domain requires them.
+        - For proxy measurements, separate raw observations from final domain conclusions; weak or indirect evidence should trigger a risk or confidence field when appropriate.
 
         Return valid JSON only:
         {{
@@ -527,7 +552,7 @@ def build_supervisor_prompt(
 
         Decision rules:
         - Focus on whether multiple sections may compete for figure evidence.
-        - If section4/section5 or similar figure-heavy sections can be confused, enable the figure classification repair agent.
+        - If material_info.section4/section5 or similar figure-heavy sections can be confused, enable the figure classification repair agent.
         - Use the expected field types, evidence ownership plan, and section purposes to justify the decision.
 
         Return valid JSON only:
@@ -538,7 +563,7 @@ def build_supervisor_prompt(
           "decision_summary": "string",
           "risk_signals": ["string"],
           "risk_assessment": "string",
-          "trigger_sections": ["section4", "section5"],
+          "trigger_sections": ["material_info.section4", "section5"],
           "expected_figure_fields": ["material_info.section4.R_T.figure"],
           "skip_reason": ""
         }}
@@ -578,7 +603,7 @@ def build_figure_classification_prompt(shared_context, section_result, field_pla
           "classification_strategy": ["string"],
           "section_figure_plan": [
             {{
-              "section_id": "section4",
+              "section_id": "material_info.section4",
               "section_name": "string",
               "figure_scope": "string",
               "allowed_figure_categories": ["R_T", "R_H"],
@@ -645,18 +670,20 @@ def build_schema_design_prompt(
         {json.dumps(figure_result, ensure_ascii=False, indent=2)}
 
         Requirements:
-        - field_registry.section_id must point to either a declared section id or a top-level owner key such as primary_signature, material_info, paper_info.
-        - Do not assign paper_info.* fields to section0-sectionN unless paper metadata is explicitly modeled as a section.
+        - Keep the schema assembly compact enough for reliable execution. Prefer 60-90 high-value fields over exhaustive expansion.
+        - Convert each field-planning group into representative database fields; do not enumerate every possible synonym, subsection, or measurement variant when one contextualized array/object field can cover them.
+        - Use concise descriptions and reasons. Long domain explanations belong in earlier modules, not in the field registry.
+        - field_registry.section_id must point to either a declared canonical section id such as material_info.section1 or a top-level owner key such as paper_info, device_info, reaction_info, dataset_info, or interface_info.
+        - Do not assign paper_info.* fields to material_info.section0-section4; bibliographic metadata and downloadable resources belong under paper_info.
+        - Use material_info.section0 for material identity and tuning, material_info.section1 for core domain parameters/performance, material_info.section2 for processing, material_info.section3 for microscopic/electronic/structural evidence, material_info.section4 for macroscopic property curves, and section5 for theory/mechanism.
+        - For a materials-literature task, schema roots must come from the approved section architecture and field_planning_result: paper_info, primary_signature, primary_signature_normalized, material_info, section5, normalization_aliases, material_name_aliases, formula_aliases, sample_id_aliases, plus explicitly justified non-material owners from the supervisor.
+        - Do not introduce any schema root that is absent from both the section architecture and field_planning_result. If a prior attempt contains unrelated template roots, discard that attempt and rebuild from field_planning_result.
         - If figure classification is enabled, figure-linked fields must respect the allowed section and category boundaries from the figure classification result.
         - Avoid umbrella figure fields when object-level evidence references are more precise.
         - Reflect must-have concepts from the subjective supervisor and mechanism requirement module in explicit fields.
-        - For skyrmion or topological magnetic-structure databases, include explicit fields for:
-          phase_identity.phase_type, phase_identity.assignment_basis, phase_identity.primary_method,
-          phase_identity.supporting_methods, phase_identity.confidence_level,
-          phase_identity.hall_only_risk_flag, and phase_identity.evidence_links.
-        - Include DMI provenance fields: dmi_source_type, dmi_value, dmi_unit, dmi_estimation_method, and dmi_evidence_links.
-        - Include theory provenance fields for hamiltonian_terms and calculation_or_simulation_method so experimental values are not mixed with DFT or simulation parameters.
-        - Do not model topological Hall evidence as direct high-confidence phase_type evidence; it must be a transport evidence object linked to the phase claim.
+        - Include explicit confidence and evidence-link fields for inferred labels or state assignments when the target domain needs them.
+        - Include theory or model provenance fields where needed so experimental values are not mixed with fitted, simulated, or calculated parameters.
+        - Do not model proxy evidence as a direct high-confidence domain conclusion unless the target domain explicitly supports that inference.
         - Prefer the term figure classification over source attribution when justifying figure-linked fields.
 
         Return valid JSON only:
@@ -677,7 +704,7 @@ def build_schema_design_prompt(
               "source_basis": ["text", "table", "figure"],
               "figure_constraint": {{
                 "uses_figure_classification": true,
-                "allowed_sections": ["section4"],
+                "allowed_sections": ["material_info.section4"],
                 "allowed_figure_categories": ["R_T"],
                 "why_needed": "string"
               }},
@@ -730,11 +757,13 @@ def build_specialization_critic_prompt(
 
         Requirements:
         - Judge substance, not formatting.
-        - State whether the design still resembles a generic materials template.
+        - Do not reject a design merely because it uses the shared six-section materials backbone; that backbone is expected.
+        - Reject designs that redefine the canonical section meanings without justification, omit the backbone when material records are present, or put paper metadata into material_info.section0-section4.
+        - State whether the fields inside the shared backbone are still too generic for the target domain.
         - Flag missing must-have concepts, collapsed objects, weak evidence modeling, or vague field ownership.
-        - Reject designs that allow phase_type to be assigned from Hall transport without a confidence/risk field.
-        - Reject designs that mention DMI but do not distinguish experimental, simulation, DFT, literature, or author-interpretation origin.
-        - Reject designs that collapse Hamiltonian terms, simulation parameters, and experimental observables into one generic mechanism summary.
+        - Reject designs that assign inferred labels from weak proxy evidence without confidence, basis, or risk fields.
+        - Reject designs that mention mechanism or model parameters but do not distinguish experimental, fitted, simulated, calculated, literature, or author-interpretation origin.
+        - Reject designs that collapse theoretical parameters, simulation parameters, and experimental observables into one generic mechanism summary.
         - If the design is weak, provide targeted redo directives.
 
         Return valid JSON only:
