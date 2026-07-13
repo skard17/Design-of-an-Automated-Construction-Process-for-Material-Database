@@ -218,6 +218,7 @@ def stage_specific_rules(stage: dict[str, Any]) -> list[str]:
                 "For section2, extract only fabrication, growth, synthesis, processing, treatment, sample preparation, device fabrication, or gating/intercalation steps.",
                 "Do not put characterization or property-measurement procedures into section2 unless the field explicitly asks for measurement-preparation conditions.",
                 "If a sentence says measurements were performed, spectra were measured, MR/Hall/XRD/XAS/SEMPA/SQUID was carried out, route it to section3/section4 context instead of section2.",
+                "Section2 figures/tables are allowed only when they describe fabrication, growth, synthesis, treatment, device fabrication, processing conditions, or sample preparation; reject property curves, characterization figures, and measurement-result figures.",
             ]
         )
     if section_id == "material_info.section3":
@@ -246,6 +247,12 @@ def stage_specific_rules(stage: dict[str, Any]) -> list[str]:
             [
                 "Use only canonical allowed section IDs: paper_info, material_info.section0, material_info.section1, material_info.section2, material_info.section3, material_info.section4, section5.",
                 "Classify figures by what evidence they support, not by the paper's numbered section headings.",
+                "Always emit field_path exactly as figure_classification.figures.",
+                "Each extracted value must be an object with figure_id, panel_id, caption_or_evidence, evidence_type, assigned_section, allowed_sections, prohibited_sections, assignment_reason, and confidence.",
+                "assigned_section must be one canonical section ID, not a paper section number.",
+                "material_info.section2 is only for process, fabrication, synthesis, treatment, growth, device fabrication, or processing-condition evidence.",
+                "Never assign magnetic/property curves, transport curves, Hall/MR plots, susceptibility, magnetization, thermodynamic, optical, electrochemical, mechanical, characterization, microscopy, diffraction, spectroscopy, theory, simulation, or mechanism figures to material_info.section2.",
+                "Route property curves/maps/plots to material_info.section4; route microscopy/diffraction/spectroscopy/structural/electronic characterization to material_info.section3; route theory/simulation/mechanism schematics to section5.",
             ]
         )
     return rules
@@ -277,9 +284,14 @@ Rules:
 - Return JSON only.
 - Extract only information supported by the document text.
 - Do not invent values.
+- Match the exact semantics of each field path. Do not substitute a related descriptor, mechanism, oxidation state, electronic configuration, preparation statement, or hypothetical structure for the requested quantity.
+- A characterization technique counts as extracted only when the document reports an actual observation, result, spectrum, image, curve, map, or measured value from that technique. Merely naming a technique or describing sample preparation is not a result.
+- Do not turn "implied", "likely", "consistent with", "assumed", "presumed", or model-dependent interpretations into explicit facts. Extract an inferred classification only when the allowed field explicitly models inference and the output records its assignment basis, source type, confidence, and direct evidence.
 - Never put null, "not mentioned", "not reported", "none", "N/A", or empty values in extracted_fields.
 - If a requested field is absent, put it under missing_fields with field_path and a short missing_reason.
+- Account for every allowed field path exactly once per material/sample: either with direct evidence in extracted_fields or with an explicit reason in missing_fields.
 - Every extracted value must include field_path, non-null value, evidence_text, confidence, and source_hint.
+- evidence_text must directly support the value and field meaning; nearby topical text is insufficient.
 - If the document has multiple material systems, keep material_system or sample_id on each extracted item when possible.
 - Preserve DOI/arXiv/title metadata when the stage is paper_info.
 - For figure_classification, classify figures/tables/panels by evidence type and allowed section.
@@ -315,7 +327,29 @@ Document text:
 """.strip()
 
 
-NULL_LIKE_VALUES = {"", "null", "none", "not mentioned", "not reported", "n/a", "na", "no", "not found"}
+NULL_LIKE_VALUES = {
+    "",
+    "null",
+    "none",
+    "not mentioned",
+    "not reported",
+    "not provided",
+    "not available",
+    "not observed",
+    "not specified",
+    "n/a",
+    "na",
+    "no",
+    "not found",
+}
+NULL_LIKE_PREFIX_PATTERN = re.compile(
+    r"^(?:"
+    r"not\s+(?:explicitly\s+)?(?:mentioned|reported|provided|available|observed|found|specified|extracted|given|stated|measured|determined)"
+    r"|no\s+(?:(?:explicit|reported|available|measurable)\s+)?(?:value|data|result|information|measurement|evidence)\b"
+    r"|no\s+.{1,80}\s+(?:was|were|is|are)\s+(?:reported|provided|given|stated|measured|determined)\b"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 MEASUREMENT_LEAK_PATTERNS = (
     "measurements were performed",
     "measurement was performed",
@@ -329,6 +363,12 @@ MEASUREMENT_LEAK_PATTERNS = (
     "magnetoresistance",
     "diffraction pattern",
     "microscopy image",
+    "magnetization",
+    "susceptibility",
+    "hysteresis",
+    "transport curve",
+    "resistivity",
+    "property curve",
 )
 PROCESS_KEEP_PATTERNS = (
     "grown",
@@ -346,10 +386,230 @@ PROCESS_KEEP_PATTERNS = (
     "te-rich",
     "te-poor",
 )
+CANONICAL_SECTION_IDS = {
+    "paper_info",
+    "material_info.section0",
+    "material_info.section1",
+    "material_info.section2",
+    "material_info.section3",
+    "material_info.section4",
+    "section5",
+}
+FIGURE_PROPERTY_CURVE_PATTERNS = (
+    "property curve",
+    "m-h",
+    "m_h",
+    "m vs h",
+    "m-h loop",
+    "m-t",
+    "m_t",
+    "m vs t",
+    "hysteresis",
+    "magnetization",
+    "susceptibility",
+    "chi",
+    "hall",
+    "magnetoresistance",
+    "resistivity",
+    "transport",
+    "ac susceptibility",
+    "hall resistivity",
+    "topological hall",
+    "mr curve",
+    "r-h",
+    "r-t",
+    "heat capacity",
+    "specific heat",
+    "iv curve",
+    "i-v",
+    "j-v",
+    "stress-strain",
+    "eis",
+    "cv curve",
+)
+FIGURE_CHARACTERIZATION_PATTERNS = (
+    "xrd",
+    "xas",
+    "xps",
+    "tem",
+    "stem",
+    "sem",
+    "stm",
+    "afm",
+    "ltem",
+    "diffraction",
+    "microscopy",
+    "spectrum",
+    "spectra",
+    "spectroscopy",
+    "raman",
+    "eds",
+    "edx",
+    "arpes",
+    "neutron",
+    "composition map",
+    "elemental map",
+)
+FIGURE_THEORY_PATTERNS = (
+    "theory",
+    "theoretical",
+    "simulation",
+    "calculation",
+    "calculated",
+    "dft",
+    "model",
+    "mechanism",
+    "schematic",
+    "dmi",
+    "bloch",
+    "neel",
+    "free energy",
+    "phase diagram",
+)
+FIGURE_PROCESS_PATTERNS = (
+    "synthesis",
+    "growth",
+    "grown",
+    "deposition",
+    "deposited",
+    "fabrication",
+    "fabricated",
+    "anneal",
+    "annealing",
+    "treatment",
+    "processing",
+    "prepared",
+    "sample preparation",
+    "device fabrication",
+    "intercalation",
+    "gating",
+    "sputter",
+    "milled",
+    "reaction route",
+)
 
 
 def is_null_like(value: Any) -> bool:
-    return value is None or str(value).strip().lower() in NULL_LIKE_VALUES
+    if value is None:
+        return True
+    if isinstance(value, str):
+        text = value.strip()
+        return text.lower() in NULL_LIKE_VALUES or bool(NULL_LIKE_PREFIX_PATTERN.match(text))
+    if isinstance(value, list):
+        return not value or all(is_null_like(item) for item in value)
+    if isinstance(value, dict):
+        semantic_values = [item for key, item in value.items() if key not in {"unit", "confidence", "source_hint"}]
+        return not semantic_values or all(is_null_like(item) for item in semantic_values)
+    return False
+
+
+def record_owner(item: dict[str, Any]) -> str:
+    return str(item.get("material_system") or item.get("sample_id") or "").strip().casefold()
+
+
+def extracted_identity(item: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(item.get("field_path") or "").strip(),
+        json.dumps(item.get("value"), ensure_ascii=False, sort_keys=True, default=str),
+        str(item.get("unit") or "").strip().casefold(),
+        record_owner(item),
+    )
+
+
+def evidence_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    evidence = {
+        key: item.get(key)
+        for key in ("evidence_text", "source_hint", "confidence")
+        if item.get(key) not in {None, ""}
+    }
+    return evidence or None
+
+
+def deduplicate_extracted_fields(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for item in items:
+        key = extracted_identity(item)
+        if key not in merged:
+            merged[key] = dict(item)
+            existing_evidence = merged[key].get("evidence_items")
+            if not isinstance(existing_evidence, list):
+                existing_evidence = []
+            current_evidence = evidence_item(item)
+            if current_evidence and current_evidence not in existing_evidence:
+                existing_evidence.append(current_evidence)
+            if existing_evidence:
+                merged[key]["evidence_items"] = existing_evidence
+            continue
+
+        target = merged[key]
+        evidence_items = target.setdefault("evidence_items", [])
+        for candidate in item.get("evidence_items") or []:
+            if isinstance(candidate, dict) and candidate not in evidence_items:
+                evidence_items.append(candidate)
+        current_evidence = evidence_item(item)
+        if current_evidence and current_evidence not in evidence_items:
+            evidence_items.append(current_evidence)
+        confidences = [value for value in (target.get("confidence"), item.get("confidence")) if isinstance(value, (int, float))]
+        if confidences:
+            target["confidence"] = max(confidences)
+    return list(merged.values())
+
+
+def reconcile_missing_fields(
+    extracted: list[dict[str, Any]], missing: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    extracted_owners: dict[str, set[str]] = {}
+    for item in extracted:
+        extracted_owners.setdefault(str(item.get("field_path") or "").strip(), set()).add(record_owner(item))
+
+    reconciled = []
+    seen = set()
+    for item in missing:
+        if not isinstance(item, dict):
+            continue
+        field_path = str(item.get("field_path") or "").strip()
+        owner = record_owner(item)
+        owners_with_values = extracted_owners.get(field_path, set())
+        if owners_with_values and (not owner or owner in owners_with_values or "" in owners_with_values):
+            continue
+        key = (field_path, owner, str(item.get("missing_reason") or "").strip())
+        if key not in seen:
+            seen.add(key)
+            reconciled.append(item)
+    return reconciled
+
+
+def assess_stage_yield(
+    document_checks: list[dict[str, Any]], expected_fields: list[str], *, stage_id: str
+) -> dict[str, Any]:
+    expected = {str(field).strip() for field in expected_fields if str(field).strip()}
+    extracted_total = sum(int(check.get("extracted_count", 0) or 0) for check in document_checks)
+    missing_total = sum(int(check.get("missing_count", 0) or 0) for check in document_checks)
+    if expected and document_checks:
+        addressed_total = sum(
+            len(expected.intersection({str(path).strip() for path in check.get("addressed_field_paths", [])}))
+            for check in document_checks
+        )
+        coverage_ratio = addressed_total / (len(expected) * len(document_checks))
+    else:
+        coverage_ratio = 1.0 if document_checks else 0.0
+
+    if extracted_total:
+        status = "passed"
+        outcome = "values_extracted"
+    elif stage_id == "figure_classification" or coverage_ratio >= 1.0:
+        status = "passed"
+        outcome = "no_values_found"
+    else:
+        status = "low_quality"
+        outcome = "unaccounted_fields"
+    return {
+        "status": status,
+        "extraction_outcome": outcome,
+        "field_coverage_ratio": round(coverage_ratio, 4),
+        "extracted_total": extracted_total,
+        "missing_total": missing_total,
+    }
 
 
 def is_section2_measurement_leak(item: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -359,6 +619,18 @@ def is_section2_measurement_leak(item: dict[str, Any], payload: dict[str, Any]) 
     if any(pattern in text for pattern in PROCESS_KEEP_PATTERNS):
         return False
     return any(pattern in text for pattern in MEASUREMENT_LEAK_PATTERNS)
+
+
+def is_unsupported_inference(item: dict[str, Any]) -> bool:
+    value = item.get("value")
+    if not isinstance(value, str) or not re.search(
+        r"\b(?:implied|likely|presumed|assumed|inferred)\b", value, flags=re.IGNORECASE
+    ):
+        return False
+    has_basis = bool(item.get("assignment_basis") or item.get("inference_basis"))
+    has_source_type = bool(item.get("source_type") or item.get("provenance_type"))
+    has_confidence = item.get("confidence") not in {None, ""}
+    return not (has_basis and has_source_type and has_confidence)
 
 
 def normalize_doi(value: Any) -> Any:
@@ -375,8 +647,19 @@ def canonical_section_id(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     text = value.strip()
-    if text in {"section0", "section1", "section2", "section3", "section4"}:
-        return f"material_info.{text}"
+    normalized = re.sub(r"[\s_-]+", "", text.lower())
+    if normalized in {"section0", "section1", "section2", "section3", "section4"}:
+        return f"material_info.{normalized}"
+    if normalized == "materialinfosection0":
+        return "material_info.section0"
+    if normalized == "materialinfosection1":
+        return "material_info.section1"
+    if normalized == "materialinfosection2":
+        return "material_info.section2"
+    if normalized == "materialinfosection3":
+        return "material_info.section3"
+    if normalized == "materialinfosection4":
+        return "material_info.section4"
     if text in {"section5", "paper_info"} or text.startswith("material_info."):
         return text
     return text
@@ -396,6 +679,163 @@ def normalize_figure_sections(value: Any) -> Any:
         else:
             normalized[key] = normalize_figure_sections(item)
     return normalized
+
+
+def flatten_for_search(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(f"{flatten_for_search(key)} {flatten_for_search(item)}" for key, item in value.items())
+    if isinstance(value, list):
+        return " ".join(flatten_for_search(item) for item in value)
+    return str(value or "")
+
+
+def text_has_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(pattern)}(?![a-z0-9])", text) for pattern in patterns)
+
+
+def infer_figure_section_from_text(text: str) -> str | None:
+    lowered = text.lower()
+    if text_has_any(lowered, FIGURE_CHARACTERIZATION_PATTERNS):
+        return "material_info.section3"
+    if text_has_any(lowered, FIGURE_PROPERTY_CURVE_PATTERNS):
+        return "material_info.section4"
+    if text_has_any(lowered, FIGURE_THEORY_PATTERNS):
+        return "section5"
+    if text_has_any(lowered, FIGURE_PROCESS_PATTERNS):
+        return "material_info.section2"
+    return None
+
+
+def infer_figure_evidence_type(section_id: str | None) -> str:
+    if section_id == "material_info.section2":
+        return "process_or_fabrication"
+    if section_id == "material_info.section3":
+        return "microscopic_or_structural_characterization"
+    if section_id == "material_info.section4":
+        return "macroscopic_property_curve_or_map"
+    if section_id == "section5":
+        return "theory_or_mechanism"
+    return "section_evidence"
+
+
+def canonicalize_figure_value(raw_value: Any, source_item: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    value = normalize_figure_sections(raw_value)
+    if not isinstance(value, dict):
+        possible_section = canonical_section_id(value)
+        value = {"raw_value": raw_value}
+        if isinstance(possible_section, str) and possible_section in CANONICAL_SECTION_IDS:
+            value["assigned_section"] = possible_section
+
+    field_tail = str(source_item.get("field_path") or "").rsplit(".", 1)[-1]
+    if value.get("figure_label") and not value.get("figure_id"):
+        value["figure_id"] = value.get("figure_label")
+    if field_tail and field_tail not in {"figure_classification", "figures"}:
+        value.setdefault("figure_id", field_tail)
+    if value.get("reason") and not value.get("assignment_reason"):
+        value["assignment_reason"] = value.get("reason")
+    if value.get("caption") and not value.get("caption_or_evidence"):
+        value["caption_or_evidence"] = value.get("caption")
+
+    assigned_section = (
+        value.get("assigned_section")
+        or value.get("section_assignment")
+        or value.get("assigned_to")
+        or value.get("section")
+        or value.get("section_id")
+        or value.get("target_section")
+        or (value.get("allowed_sections") or [None])[0]
+    )
+    assigned_section = canonical_section_id(assigned_section)
+
+    search_text = " ".join(
+        [
+            flatten_for_search(value),
+            str(source_item.get("evidence_text") or ""),
+            str(source_item.get("source_hint") or ""),
+        ]
+    ).lower()
+    inferred_section = infer_figure_section_from_text(search_text)
+    note = None
+    if assigned_section == "material_info.section2" and inferred_section in {
+        "material_info.section3",
+        "material_info.section4",
+        "section5",
+    }:
+        value.setdefault("original_assigned_section", assigned_section)
+        assigned_section = inferred_section
+        note = (
+            f"Rerouted {value.get('figure_id', 'figure')} from material_info.section2 "
+            f"to {assigned_section} because its evidence is not process/fabrication evidence."
+        )
+    elif inferred_section == "material_info.section4" and assigned_section in {
+        "material_info.section1",
+        "material_info.section2",
+        "material_info.section3",
+    }:
+        value.setdefault("original_assigned_section", assigned_section)
+        assigned_section = inferred_section
+        note = (
+            f"Rerouted {value.get('figure_id', 'figure')} from {value.get('original_assigned_section')} "
+            "to material_info.section4 because its evidence is a property curve, map, or measurement result."
+        )
+    elif inferred_section == "material_info.section3" and assigned_section in {
+        "material_info.section1",
+        "material_info.section2",
+    }:
+        value.setdefault("original_assigned_section", assigned_section)
+        assigned_section = inferred_section
+        note = (
+            f"Rerouted {value.get('figure_id', 'figure')} from {value.get('original_assigned_section')} "
+            "to material_info.section3 because its evidence is characterization evidence."
+        )
+    elif inferred_section == "section5" and assigned_section in {
+        "material_info.section1",
+        "material_info.section2",
+    }:
+        value.setdefault("original_assigned_section", assigned_section)
+        assigned_section = inferred_section
+        note = (
+            f"Rerouted {value.get('figure_id', 'figure')} from {value.get('original_assigned_section')} "
+            "to section5 because its evidence is theory, simulation, or mechanism evidence."
+        )
+    elif (not isinstance(assigned_section, str) or assigned_section not in CANONICAL_SECTION_IDS) and inferred_section:
+        assigned_section = inferred_section
+
+    if isinstance(assigned_section, str) and assigned_section in CANONICAL_SECTION_IDS:
+        value["assigned_section"] = assigned_section
+        value.setdefault("allowed_sections", [assigned_section])
+
+    if isinstance(value.get("allowed_sections"), list):
+        value["allowed_sections"] = [canonical_section_id(item) for item in value["allowed_sections"]]
+    if isinstance(value.get("prohibited_sections"), list):
+        value["prohibited_sections"] = [canonical_section_id(item) for item in value["prohibited_sections"]]
+    elif isinstance(value.get("blocked_sections"), list):
+        value["prohibited_sections"] = [canonical_section_id(item) for item in value["blocked_sections"]]
+    else:
+        value.setdefault("prohibited_sections", [])
+
+    value.setdefault("panel_id", "")
+    value.setdefault("caption_or_evidence", source_item.get("evidence_text") or value.get("caption") or "")
+    value.setdefault("evidence_type", infer_figure_evidence_type(value.get("assigned_section")))
+    value.setdefault("assignment_reason", "Assigned by figure classification evidence.")
+    value.setdefault("confidence", source_item.get("confidence") if source_item.get("confidence") is not None else "unspecified")
+    return value, note
+
+
+def canonicalize_figure_classification_item(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    raw_value = item.get("value")
+    raw_values = raw_value if isinstance(raw_value, list) else [raw_value]
+    canonical_items = []
+    notes = []
+    for value_item in raw_values:
+        value, note = canonicalize_figure_value(value_item, item)
+        canonical_item = dict(item)
+        canonical_item["field_path"] = "figure_classification.figures"
+        canonical_item["value"] = value
+        canonical_items.append(canonical_item)
+        if note:
+            notes.append(note)
+    return canonical_items, notes
 
 
 def field_matches_any(field_path: str, patterns: list[str]) -> bool:
@@ -482,6 +922,8 @@ def sanitize_payload(payload: dict[str, Any], normalize_unicode: bool = False) -
         missing = []
     clean_extracted = []
     moved_to_missing = []
+    figure_quality_notes = []
+    is_figure_stage = str(payload.get("stage_id") or "") == "figure_classification"
     for item in extracted:
         if not isinstance(item, dict):
             continue
@@ -501,19 +943,34 @@ def sanitize_payload(payload: dict[str, Any], normalize_unicode: bool = False) -
                     "source_hint": item.get("source_hint"),
                 }
             )
+        elif is_unsupported_inference(item):
+            moved_to_missing.append(
+                {
+                    "field_path": item.get("field_path"),
+                    "missing_reason": "Removed because the value is an inferred label without a structured inference basis, source type, and confidence.",
+                    "source_hint": item.get("source_hint"),
+                }
+            )
         else:
             field_path = str(item.get("field_path") or "").lower()
             if field_path.endswith(".doi") or field_path == "paper_info.metadata.doi":
                 item["value"] = normalize_doi(item.get("value"))
-            if str(payload.get("stage_id") or "") == "figure_classification":
-                item["value"] = normalize_figure_sections(item.get("value"))
+            if is_figure_stage:
+                canonical_items, notes = canonicalize_figure_classification_item(item)
+                clean_extracted.extend(canonical_items)
+                figure_quality_notes.extend(notes)
+                continue
             clean_extracted.append(item)
     if moved_to_missing:
         payload.setdefault("quality_notes", []).append(
-            f"Moved {len(moved_to_missing)} null-like extracted_fields into missing_fields."
+            f"Moved {len(moved_to_missing)} null-like or section-mismatched extracted_fields into missing_fields."
         )
+    if figure_quality_notes:
+        payload.setdefault("quality_notes", []).extend(figure_quality_notes)
+    clean_extracted = deduplicate_extracted_fields(clean_extracted)
+    clean_missing = reconcile_missing_fields(clean_extracted, [*missing, *moved_to_missing])
     payload["extracted_fields"] = clean_extracted
-    payload["missing_fields"] = [*missing, *moved_to_missing]
+    payload["missing_fields"] = clean_missing
     return payload
 
 
@@ -576,12 +1033,20 @@ def validate_stage_payload(payload: dict[str, Any], normalize_unicode: bool = Fa
             null_like_count += 1
         if item.get("evidence_text"):
             evidence_count += 1
+    addressed_field_paths = sorted(
+        {
+            str(item.get("field_path") or "").strip()
+            for item in [*extracted, *missing]
+            if isinstance(item, dict) and str(item.get("field_path") or "").strip()
+        }
+    )
     return {
         "extracted_count": len(extracted),
         "missing_count": len(missing),
         "null_like_count": null_like_count,
         "unicode_candidate_count": unicode_candidate_count,
         "evidence_count": evidence_count,
+        "addressed_field_paths": addressed_field_paths,
         "has_json": True,
         "has_evidence": evidence_count > 0 or len(extracted) == 0,
     }
@@ -617,11 +1082,11 @@ def run_extraction_bench(
         stage_policy = (workflow_plan.get("stage_batching_policy") or {}).get(stage_id) or {}
         stage_max_fields = int(stage_policy.get("max_fields_per_call") or max_fields_per_stage)
         all_fields = stage_fields(prompt_output, stage_id)
-        if stage_policy.get("max_fields_per_call"):
+        if stage_max_fields and len(all_fields) > stage_max_fields:
             field_batches = chunk_fields(all_fields, stage_max_fields)
             fields = all_fields
         else:
-            fields = all_fields[:stage_max_fields]
+            fields = all_fields
             field_batches = [fields]
         doc_results = []
         failed_docs = []
@@ -671,19 +1136,25 @@ def run_extraction_bench(
                         pass
 
                 prompt = build_stage_prompt(document_text, doc_name, stage, batch_fields, dependency_context)
-                raw_text = prompt_agent.litellm_chat(
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=model,
-                    prompt=prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
                 try:
+                    raw_text = prompt_agent.litellm_chat(
+                        base_url=base_url,
+                        api_key=api_key,
+                        model=model,
+                        prompt=prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
                     batch_payload = prompt_agent.parse_llm_json(raw_text)
                     batch_payload = sanitize_payload(batch_payload, normalize_unicode=False)
                 except Exception as exc:  # noqa: BLE001 - keep bench diagnostics explicit
-                    batch_payload = {"raw_text": raw_text, "error": str(exc)}
+                    batch_payload = {
+                        "stage_id": stage.get("stage_id"),
+                        "section_id": stage.get("section_id"),
+                        "document": doc_name,
+                        "raw_text": locals().get("raw_text", ""),
+                        "error": str(exc),
+                    }
                 if len(field_batches) > 1:
                     batch_output_file.write_text(json_dumps(batch_payload), encoding="utf-8")
                 batch_payloads.append(batch_payload)
@@ -706,15 +1177,18 @@ def run_extraction_bench(
             Path(item["output_file"]).write_text(json_dumps(payload), encoding="utf-8")
             doc_results.append(item)
 
-        extracted_total = sum((item.get("checks") or {}).get("extracted_count", 0) for item in doc_results)
+        document_checks = [item.get("checks") or {} for item in doc_results]
+        yield_assessment = assess_stage_yield(document_checks, fields, stage_id=stage_id)
+        extracted_total = yield_assessment["extracted_total"]
+        missing_total = yield_assessment["missing_total"]
         null_like_total = sum((item.get("checks") or {}).get("null_like_count", 0) for item in doc_results)
         unicode_candidate_total = sum((item.get("checks") or {}).get("unicode_candidate_count", 0) for item in doc_results)
         invalid_count = sum(1 for item in doc_results if item.get("status") == "invalid_json")
         stage_status = "passed"
         if invalid_count:
             stage_status = "invalid_json"
-        elif extracted_total == 0 and stage_id not in {"figure_classification"}:
-            stage_status = "low_quality"
+        else:
+            stage_status = yield_assessment["status"]
 
         section_result = {
             "stage_id": stage_id,
@@ -739,6 +1213,9 @@ def run_extraction_bench(
                 "documents": len(doc_results),
                 "invalid_json": invalid_count,
                 "extracted_total": extracted_total,
+                "missing_total": missing_total,
+                "field_coverage_ratio": yield_assessment["field_coverage_ratio"],
+                "extraction_outcome": yield_assessment["extraction_outcome"],
                 "null_like_total": null_like_total,
                 "unicode_candidate_total": unicode_candidate_total,
                 "failed_docs": failed_docs,

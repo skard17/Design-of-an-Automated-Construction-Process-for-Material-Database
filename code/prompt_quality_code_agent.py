@@ -501,17 +501,23 @@ def litellm_chat(base_url, api_key, model, prompt, temperature=0, max_tokens=409
         "response_format": {"type": "json_object"},
         "max_tokens": max_tokens,
     }
-    request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
     for attempt in range(3):
+        request = urllib.request.Request(
+            f"{base_url.rstrip('/')}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
                 data = json.loads(response.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"].get("content") or ""
+            if content.strip():
+                return content
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise RuntimeError("LiteLLM returned empty message content after retries.")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             if exc.code in {502, 503, 504} and attempt < 2:

@@ -34,6 +34,9 @@ STEP8_FRAMEWORK = textwrap.dedent(
     - The design must avoid generic umbrella fields when parameter-level evidence linkage is needed.
     - Domain claims, labels, and scalar values must be separated from the evidence used to assign or measure them.
     - Any indirect evidence must be marked as supporting evidence rather than silently promoted to a direct assignment.
+    - Before choosing schema roots, identify the scientific entities that the database must query independently, such as materials, samples, devices, interfaces, reactions, datasets, states, or measurement configurations.
+    - Entity-specific quantities must belong to their actual entity owner. Do not force device response, interface behavior, reaction kinetics, directional asymmetry, spectral states, or geometry into the nearest generic material field.
+    - A schema may support inferred scientific labels only through an explicit inference object with assignment basis, source type, confidence, and evidence links; otherwise the extraction contract must require directly stated or directly measured facts.
     - Mechanism, model, and fitted parameters must record whether they come from experiment, fitted simulation, first-principles calculation, literature assumption, or author interpretation.
     - The no-figure-classification branch must still produce an explicit stable plan rather than leaving the routing implicit.
     - The agent must explain how the target-domain fields specialize the shared backbone rather than inventing unrelated section semantics.
@@ -52,7 +55,7 @@ MATERIAL_DATABASE_SECTION_BACKBONE = textwrap.dedent(
     - section5: Theory and Mechanism. Mechanism interpretation, model assumptions, fitting, simulation, first-principles calculation, theory figures, and calculated/fitted parameters kept separate from experimental scalar values.
 
     Use paper_info as a separate top-level owner for bibliographic metadata and resources; do not model paper metadata as one of material_info.section0-section4.
-    If the target is device-, reaction-, dataset-, or interface-centric, the supervisor may add a separate top-level owner such as device_info, reaction_info, dataset_info, or interface_info, but should still preserve the six-section material_info backbone when material records are present.
+    If the target is device-, reaction-, dataset-, or interface-centric, the supervisor may add a separate top-level owner such as device_info, reaction_info, dataset_info, or interface_info, but should still preserve the six-section material_info backbone when material records are present. Choose these owners from the target's real retrieval entities, not from a fixed domain example.
     """
 ).strip()
 
@@ -105,6 +108,11 @@ FINAL_OUTPUT_SCHEMA_DESCRIPTION = textwrap.dedent(
             "data_type": "string",
             "required": true,
             "source_basis": ["text", "table", "figure"],
+            "concept_ids": ["ascii_snake_case_id"],
+            "object_contract": {
+              "object_kind": "measurement",
+              "required_subfields": ["value", "conditions", "entity_ref", "source_type", "evidence", "confidence"]
+            },
             "figure_constraint": {
               "uses_figure_classification": true,
               "allowed_sections": ["material_info.section4"],
@@ -115,6 +123,31 @@ FINAL_OUTPUT_SCHEMA_DESCRIPTION = textwrap.dedent(
           }
         ]
       },
+      "requirement_contract": {
+        "concepts": [
+          {
+            "concept_id": "ascii_snake_case_id",
+            "label": "string",
+            "required": true,
+            "entity_id": "material",
+            "owner_key": "material_info",
+            "object_kind": "measurement",
+            "condition_requirements": ["string"],
+            "evidence_types": ["text", "table", "figure"],
+            "source_requirement_ids": ["query_1"]
+          }
+        ]
+      },
+      "entity_registry": [
+        {
+          "entity_id": "material",
+          "label": "Material",
+          "required": true,
+          "owner_key": "material_info",
+          "independent_owner": false
+        }
+      ],
+      "coverage_report": {},
       "quality_check": {
         "topic_specific_adjustments": ["string"],
         "coverage_check": ["string"],
@@ -305,6 +338,18 @@ def build_subjective_supervisor_prompt(
     query_result,
     evidence_result,
 ):
+    source_requirement_catalog = [
+        {"requirement_id": f"query_{index}", "source": "query_requirement", "text": str(requirement)}
+        for index, requirement in enumerate(shared_context.get("query_requirements", []) or [], start=1)
+    ]
+    if str(shared_context.get("human_advice") or "").strip():
+        source_requirement_catalog.append(
+            {
+                "requirement_id": "human_advice",
+                "source": "human_expert",
+                "text": str(shared_context.get("human_advice")).strip(),
+            }
+        )
     return textwrap.dedent(
         f"""
         You are the subjective supervisor module inside Step 8: Section Design Agent.
@@ -325,10 +370,17 @@ def build_subjective_supervisor_prompt(
         Evidence model result:
         {json.dumps(evidence_result, ensure_ascii=False, indent=2)}
 
+        Source requirement catalog (use these exact requirement_id values):
+        {json.dumps(source_requirement_catalog, ensure_ascii=False, indent=2)}
+
         Requirements:
         - Explicitly state what kind of database this should be treated as.
         - Explicitly state what kind of generic template this should not collapse into.
         - List must-have concepts that downstream section and field design must preserve.
+        - Split compound requirements into atomic concepts. Each concept must have a stable ASCII snake_case concept_id that downstream fields can reference exactly.
+        - Treat human_advice in shared context as mandatory input to the requirement contract, not as a late figure-routing comment.
+        - Inventory independently queryable entities. Materials may use material_info; devices, interfaces, reactions, or datasets need their own owner when their identity, configuration, or response is queried independently.
+        - Every query requirement and human-advice requirement must be referenced by at least one concept through source_requirement_ids.
         - Identify concrete red flags such as umbrella fields, missing mechanism prerequisites, collapsed phase-window logic, or vague evidence ownership.
         - Treat domain labels and mechanism claims as claims with evidence grade, not just labels.
         - Treat mechanism and model parameters as provenance-sensitive values: record whether they are measured, fitted, simulated, calculated, assumed, or only discussed.
@@ -339,6 +391,30 @@ def build_subjective_supervisor_prompt(
           "database_nature": "string",
           "modeling_position": "string",
           "must_have_concepts": ["string"],
+          "requirement_contract": {{
+            "concepts": [
+              {{
+                "concept_id": "ascii_snake_case_id",
+                "label": "string",
+                "required": true,
+                "entity_id": "material",
+                "owner_key": "material_info",
+                "object_kind": "scalar|measurement|classification|entity_descriptor|process|evidence_collection",
+                "condition_requirements": ["string"],
+                "evidence_types": ["text", "table", "figure"],
+                "source_requirement_ids": ["query_1", "human_advice"]
+              }}
+            ]
+          }},
+          "entity_registry": [
+            {{
+              "entity_id": "material",
+              "label": "Material",
+              "required": true,
+              "owner_key": "material_info",
+              "independent_owner": false
+            }}
+          ],
           "must_not_become": ["string"],
           "red_flags": ["string"],
           "approved_section_strategy": ["string"],
@@ -411,6 +487,8 @@ def build_section_partition_prompt(
         - Preserve the canonical section ids and meanings for most materials targets: material_info.section0, material_info.section1, material_info.section2, material_info.section3, material_info.section4, and section5.
         - Adapt the fields inside each section to the target domain rather than redefining what the section numbers mean.
         - Build additional top-level owners only when the target has a real non-material entity such as device_info, reaction_info, dataset_info, interface_info, or paper_info.
+        - Start by inventorying independently queryable entities and their relations. Add an owner when its identity, geometry/configuration, state, input conditions, outputs, or evidence must be queried independently from the material record.
+        - Keep entity-specific response quantities with their owner. Direction-dependent responses, operating polarity, geometry, configuration, interfaces, spectra, state populations, kinetics, and protocol-dependent outputs are examples of field families to consider only when relevant to the target, not mandatory template fields.
         - Build section boundaries around actual domain objects when extending the backbone, not around generic materials-database habits.
         - Ensure the section split can host the must-have concepts from the subjective supervisor.
         - Keep paper metadata under paper_info, not under material_info.section0-section4.
@@ -492,6 +570,9 @@ def build_field_planning_prompt(
         - For inferred state or classification fields, plan nested objects with label, assignment_basis, primary_method, supporting_methods, confidence_level, and evidence_links when needed.
         - For mechanism fields, plan source-sensitive fields that preserve value, unit, estimation_method, source_type, and evidence_links when the domain requires them.
         - For proxy measurements, separate raw observations from final domain conclusions; weak or indirect evidence should trigger a risk or confidence field when appropriate.
+        - Derive recommended fields from the target questions and reference documents. Examples from any one material domain are illustrative only and must not constrain or populate an unrelated domain.
+        - Do not use a generic nearby field as a catch-all for a distinct target quantity. If a quantity has different semantics, conditions, directionality, entity ownership, or evidence type, plan a dedicated contextualized field or object.
+        - Mark every planned field as direct-observation, author-interpretation, model-derived, or explicitly inferred. Inferred fields require assignment_basis, source_type, confidence_level, and evidence_links; otherwise require direct textual or measurement evidence.
 
         Return valid JSON only:
         {{
@@ -594,6 +675,11 @@ def build_figure_classification_prompt(shared_context, section_result, field_pla
         - Then classify figure types only within that section.
         - Explicitly state which figure categories should be blocked from neighboring sections.
         - The output should guide downstream field design, not extract actual paper figures.
+        - Every section_figure_plan item must use the fixed keys section_id, section_name, figure_scope, allowed_figure_categories, blocked_neighbor_sections, blocked_figure_categories, and routing_rule.
+        - material_info.section2 may receive figures only for fabrication/process schematics, synthesis or growth diagrams, device fabrication flows, processing-condition figures, or processing-condition tables.
+        - Do not assign magnetic, transport, thermodynamic, optical, electrochemical, mechanical, or other property curves to material_info.section2; route those to material_info.section4.
+        - Do not assign microscopy, diffraction, spectroscopy, composition maps, or electronic-structure characterization figures to material_info.section2; route those to material_info.section3.
+        - Do not assign theory, simulation, mechanism schematics, fitted-model plots, or interpretation figures to material_info.section2; route those to section5.
         - If the supervisor disabled this module, return an explicit skipped plan with enable_figure_classification=false and an empty section_figure_plan.
 
         Return valid JSON only:
@@ -670,7 +756,7 @@ def build_schema_design_prompt(
         {json.dumps(figure_result, ensure_ascii=False, indent=2)}
 
         Requirements:
-        - Keep the schema assembly compact enough for reliable execution. Prefer 60-90 high-value fields over exhaustive expansion.
+        - Include every field and object contract needed to cover all required concepts. Control downstream context size through staged batching, not by dropping required fields from the schema.
         - Convert each field-planning group into representative database fields; do not enumerate every possible synonym, subsection, or measurement variant when one contextualized array/object field can cover them.
         - Use concise descriptions and reasons. Long domain explanations belong in earlier modules, not in the field registry.
         - field_registry.section_id must point to either a declared canonical section id such as material_info.section1 or a top-level owner key such as paper_info, device_info, reaction_info, dataset_info, or interface_info.
@@ -681,9 +767,15 @@ def build_schema_design_prompt(
         - If figure classification is enabled, figure-linked fields must respect the allowed section and category boundaries from the figure classification result.
         - Avoid umbrella figure fields when object-level evidence references are more precise.
         - Reflect must-have concepts from the subjective supervisor and mechanism requirement module in explicit fields.
+        - Copy the exact concept_id values from subjective_result.requirement_contract into each scientific field's concept_ids. Every required concept must map to at least one field; do not invent new concept ids.
+        - Verify that every independently queryable entity identified upstream has an appropriate owner and that its identity, configuration/conditions, response quantities, and evidence can be represented without being folded into an unrelated material field.
+        - Do not copy field examples from a reference domain into the final registry unless the target questions or documents justify them.
+        - Each section that extracts scientific claims must include first-class provenance fields such as evidence.source_text, evidence.source_figure, evidence.source_table, and evidence.confidence; do not rely only on prose descriptions of provenance.
+        - Sections that extract scalar values, structured parameters, property maps, or curves must include measurement_conditions fields for temperature, external field or stimulus, field direction or geometry, and protocol when those conditions can affect interpretation.
         - Include explicit confidence and evidence-link fields for inferred labels or state assignments when the target domain needs them.
         - Include theory or model provenance fields where needed so experimental values are not mixed with fitted, simulated, or calculated parameters.
         - Do not model proxy evidence as a direct high-confidence domain conclusion unless the target domain explicitly supports that inference.
+        - If an inferred label is not represented by a structured inference object with basis, source type, confidence, and evidence links, omit that label from the schema rather than inviting unsupported extraction.
         - Prefer the term figure classification over source attribution when justifying figure-linked fields.
 
         Return valid JSON only:
@@ -702,6 +794,11 @@ def build_schema_design_prompt(
               "data_type": "string",
               "required": true,
               "source_basis": ["text", "table", "figure"],
+              "concept_ids": ["ascii_snake_case_id"],
+              "object_contract": {{
+                "object_kind": "measurement",
+                "required_subfields": ["value", "conditions", "entity_ref", "source_type", "evidence", "confidence"]
+              }},
               "figure_constraint": {{
                 "uses_figure_classification": true,
                 "allowed_sections": ["material_info.section4"],

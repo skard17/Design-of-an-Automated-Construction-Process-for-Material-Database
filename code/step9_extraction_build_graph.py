@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypedDict
@@ -36,6 +37,7 @@ class Step9State(TypedDict, total=False):
     current_node: str
     next_node: str
     output: str
+    human_advice_available_before_design: bool
 
 
 SECTION_ORDER = [
@@ -136,7 +138,10 @@ def write_state_snapshot(state, current_node, next_node=None):
     snapshot["current_node"] = current_node
     if next_node:
         snapshot["next_node"] = next_node
-    state_path_from_args(args).write_text(json_dumps(snapshot), encoding="utf-8")
+    snapshot_for_file = deepcopy(snapshot)
+    if isinstance(snapshot_for_file.get("args"), dict) and snapshot_for_file["args"].get("api_key"):
+        snapshot_for_file["args"]["api_key"] = "[REDACTED]"
+    state_path_from_args(args).write_text(json_dumps(snapshot_for_file), encoding="utf-8")
     return snapshot
 
 
@@ -468,6 +473,7 @@ def build_prompt_package_from_step8(step8_output, workflow_plan):
                 f"Run stage {stage['stage_id']} for {section_id} according to the Step8 schema. "
                 "Return valid JSON only. Preserve evidence provenance with source_text, source_table, "
                 "source_figure, confidence, and missing_reason when values are absent. "
+                "Only emit field_path values listed in output_contract.fields, and account for every allowed field path exactly once. "
                 f"Respect dependencies: {', '.join(stage.get('depends_on', [])) or 'none'}. "
                 "If this stage repeatedly fails, consult workflow_plan.reference_strategy_library for known extraction patterns."
             ),
@@ -540,6 +546,7 @@ def load_inputs_node(state):
         "step8_output": step8_output,
         "prompt_output": prompt_output,
         "human_advice": human_advice,
+        "human_advice_available_before_design": bool(human_advice),
         "validation_errors": errors,
         "retry_counts": {},
         "repair_history": [],
@@ -841,8 +848,16 @@ def diagnose_section_result(section_result, unicode_normalized=False):
         )
 
     extracted_total = int(summary.get("extracted_total", 0) or 0)
+    extraction_outcome = str(summary.get("extraction_outcome") or "")
+    field_coverage_ratio = float(summary.get("field_coverage_ratio", 0) or 0)
     is_postprocess_stage = stage_id == "unicode_normalization" or str(section_result.get("section_id", "")).startswith("postprocess.")
-    if status == "low_quality" or extracted_total == 0 and stage_id != "figure_classification" and not is_postprocess_stage:
+    complete_negative_result = extraction_outcome == "no_values_found" and field_coverage_ratio >= 1.0
+    if status == "low_quality" or (
+        extracted_total == 0
+        and stage_id != "figure_classification"
+        and not is_postprocess_stage
+        and not complete_negative_result
+    ):
         diagnoses.append(
             {
                 "type": "low_extraction_yield",
@@ -995,6 +1010,8 @@ def extraction_eval_node(state):
         update["validation_errors"] = []
         update["status"] = "success"
         update["next_node"] = "human_expert_review"
+        update["schema_feedback"] = None
+        update["supervisor_decision"] = None
     return write_state_snapshot(
         merge_update(state, update),
         "extraction_eval",
@@ -1044,9 +1061,12 @@ def human_expert_review_node(state):
     current_advice_text = advice_text(human_advice)
     previously_applied_advice = str(state.get("applied_human_advice") or "").strip()
     current_advice_already_applied = bool(
-        state.get("human_review_applied")
-        and current_advice_text
-        and current_advice_text == previously_applied_advice
+        state.get("human_advice_available_before_design")
+        or (
+            state.get("human_review_applied")
+            and current_advice_text
+            and current_advice_text == previously_applied_advice
+        )
     )
     if current_advice_already_applied or advice_is_acceptance(human_advice):
         return write_state_snapshot(
@@ -1056,10 +1076,12 @@ def human_expert_review_node(state):
                     "human_expert_review": {
                         "status": "accepted",
                         "advice": human_advice,
-                        "reason": "Human expert review accepted the internally passing Step9 output, or the same advice was already applied once.",
+                        "reason": "Human expert advice was available before Step9 design, accepted the internally passing output, or the same advice was already applied once.",
                     },
                     "status": "success",
                     "validation_errors": [],
+                    "schema_feedback": None,
+                    "supervisor_decision": None,
                 },
             ),
             "human_expert_review",
@@ -1445,7 +1467,7 @@ def build_parser():
     parser.add_argument("--dry-run", action="store_true", help="Plan section-wise extraction tests without executing a live runner.")
     parser.add_argument("--skip-code-generation", action="store_true", help="Skip LLM code generation and only build/evaluate the workflow plan.")
     parser.add_argument("--base-url", default=prompt_agent.DEFAULT_BASE_URL)
-    parser.add_argument("--api-key", default=None)
+    parser.add_argument("--api-key", default=os.getenv("CODE_AGENT_API_KEY"))
     parser.add_argument("--model", default=prompt_agent.DEFAULT_MODEL)
     parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--max-tokens", type=int, default=4096)

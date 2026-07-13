@@ -1,0 +1,55 @@
+{
+  "superconductor": {
+    "required_concepts": {
+      "Tc": ["material_info.section1.Tc", "transition_temperature"],
+      "Jc": ["material_info.section1.Jc", "critical_current_density"],
+      "Hc1": ["material_info.section1.Hc1", "lower_critical_field"],
+      "Hc2": ["material_info.section1.Hc2", "upper_critical_field"],
+      "Hc": ["material_info.section1.Hc", "thermodynamic_critical_field"],
+      "superconducting_pressure": ["material_info.section1.P_sc", "pressure_range_superconducting", "superconducting_pressure_range", "superconducting_pressure_min", "superconducting_pressure_max"],
+      "normal_state_pressure": ["material_info.section1.P_nsc", "pressure_range_normal", "normal_state_pressure_range", "normal_state_pressure_min", "normal_state_pressure_max"],
+      "penetration_depth": ["material_info.section1.lambda", "penetration_depth"],
+      "coherence_length": ["material_info.section1.xi", "coherence_length"],
+      "fabrication_geometry": ["material_info.section2.geometry", "sample_geometry", "device_info.geometry", "junction_geometry"],
+      "resistance_temperature": ["material_info.section4.R_T", "resistivity_vs_temperature", "resistance_vs_temperature"],
+      "resistance_field": ["material_info.section4.R_H", "resistivity_vs_field", "resistance_vs_field"],
+      "current_voltage": ["material_info.section4.I_V", "current_voltage_characteristic", "device_info.current_voltage"],
+      "magnetization_temperature": ["material_info.section4.M_T", "magnetization_vs_temperature"],
+      "susceptibility_temperature": ["material_info.section4.chi_T", "susceptibility_vs_temperature", "susceptibility"]
+    },
+    "forbidden_patterns": [
+      "coercive_field",
+      "saturation_magnetization",
+      "remanent_magnetization",
+      "magnetocaloric"
+    ]
+  },
+  "magnetic": {
+    "required_concepts": {
+      "magnetic_order": ["magnetic_order", "magnetic_phase"],
+      "Curie_temperature": ["Curie_temperature", "transition_temperature.Tc", "material_info.section1.curie"],
+      "Neel_temperature": ["Neel_temperature", "transition_temperature.TN", "material_info.section1.neel"],
+      "blocking_temperature": ["blocking_temperature", "material_info.section1.blocking"],
+      "spin_freezing_temperature": ["spin_freezing_temperature", "spin_freezing"],
+      "spin_reorientation_temperature": ["spin_reorientation_temperature", "spin_reorientation_temperatures"],
+      "saturation_magnetization": ["saturation_magnetization"],
+      "remanent_magnetization": ["remanent_magnetization", "remanence"],
+      "coercive_field": ["coercive_field", "coercivity", ".Hc"],
+      "anisotropy": ["anisotropy_field", "anisotropy_constant", "magnetic_anisotropy", "material_info.section1.anisotropy"],
+      "exchange_interaction": ["exchange_interaction", "exchange_J", "exchange_mechanism"],
+      "magnetocaloric": ["magnetocaloric", "delta_SM", "refrigerant_capacity"],
+      "M_H_curve": ["material_info.section4.M_H"],
+      "M_T_curve": ["material_info.section4.M_T"],
+      "susceptibility": ["material_info.section4.chi_T", "susceptibility"],
+      "magnetoresistance": ["magnetoresistance", "material_info.section4.MR"],
+      "domain_imaging": ["MFM", "Lorentz_TEM", "domain_imaging"]
+    },
+    "forbidden_patterns": [
+      "gap_symmetry",
+      "pairing_mechanism",
+      "material_info.section1.Hc2",
+      "penetration_depth",
+      "coherence_length"
+    ]
+  }
+}

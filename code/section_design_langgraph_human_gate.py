@@ -47,6 +47,7 @@ class SectionDesignGraphState(TypedDict, total=False):
     last_error_type: str
     retry_counts: dict[str, int]
     repair_instructions: list[str]
+    force_deterministic_schema_compilation: bool
 
 
 def namespace_to_dict(args):
@@ -91,6 +92,8 @@ def human_gate_context_path_from_args(args):
 
 def json_safe_state(state):
     def clean(value, key_name=""):
+        if key_name == "api_key" and value:
+            return "[REDACTED]"
         if key_name == "module_attempts" and isinstance(value, dict):
             compact = {}
             for module_name, attempts in value.items():
@@ -130,6 +133,52 @@ def write_state_snapshot(state, current_node, next_node=None):
 
 def load_state_snapshot(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def migrate_legacy_modular_checkpoint(snapshot, cli_args):
+    inputs = deepcopy(snapshot.get("inputs") or {})
+    args = deepcopy(cli_args)
+    for key in ("database_goal", "discipline", "query_requirements"):
+        if inputs.get(key):
+            args[key] = inputs[key]
+    if not args.get("key_description_path"):
+        args["key_description_path"] = inputs.get("key_description_path", "")
+    if not args.get("reference_papers"):
+        args["reference_papers"] = list(inputs.get("reference_papers") or [])
+
+    query_requirements = section_agent.load_query_requirements(args.get("query_requirements"))
+    key_description_text = section_agent.load_key_description_text(args.get("key_description_path"))
+    reference_papers = list(args.get("reference_papers") or [])
+    reference_paper_context = section_agent.load_reference_paper_context(reference_papers)
+    human_advice = str(args.get("human_advice") or "").strip()
+    if not human_advice and args.get("human_advice_path"):
+        human_advice = section_agent.load_optional_text(args.get("human_advice_path"))
+    shared_context = {
+        "database_goal": args.get("database_goal", ""),
+        "discipline": args.get("discipline", ""),
+        "query_requirements": query_requirements,
+        "key_description_text": key_description_text,
+        "reference_paper_context": reference_paper_context,
+        "reference_paper_count": len(reference_papers),
+        "human_advice": human_advice,
+        "human_advice_available_before_design": bool(human_advice),
+    }
+    args["human_advice"] = human_advice
+    args["human_advice_path"] = ""
+    return {
+        "args": args,
+        "shared_context": shared_context,
+        "module_outputs": deepcopy(snapshot.get("module_outputs") or {}),
+        "module_attempts": {},
+        "module_errors": deepcopy(snapshot.get("module_errors") or {}),
+        "validation_errors": [],
+        "human_advice": human_advice,
+        "status": "running",
+        "next_node": "schema_design",
+        "force_deterministic_schema_compilation": True,
+        "retry_counts": {},
+        "repair_instructions": [],
+    }
 
 
 def write_human_gate_context(state):
@@ -219,6 +268,21 @@ def supervisor_next_node(state):
 
 
 def resume_router_node(state):
+    repair_target = coverage_repair_target(state.get("repair_instructions") or [])
+    if (
+        repair_target
+        and state.get("last_error_node") == "aggregation"
+        and state.get("next_node") != repair_target
+    ):
+        decision = deepcopy(state.get("supervisor_decision") or {})
+        decision.update(
+            {
+                "action": "resume_coverage_repair",
+                "reason": "Re-evaluated persisted coverage errors with the current deterministic router.",
+                "next_node": repair_target,
+            }
+        )
+        return merge_update(state, {"next_node": repair_target, "supervisor_decision": decision})
     return state
 
 
@@ -237,7 +301,9 @@ def prepare_state(state):
         "query_requirements": query_requirements,
         "key_description_text": key_description_text,
         "reference_paper_context": reference_paper_context,
+        "reference_paper_count": len(args.reference_papers or []),
         "human_advice": human_advice,
+        "human_advice_available_before_design": bool(str(human_advice or "").strip()),
         "shared_context_block": build_shared_context_block(
             args.database_goal,
             args.discipline,
@@ -303,6 +369,28 @@ def stop_if_errors(state, next_node):
     return next_node
 
 
+def coverage_repair_target(errors):
+    messages = [str(error) for error in errors or []]
+    if any(message.startswith("coverage:missing_entity_owners:") for message in messages):
+        return "subjective_supervisor"
+    if any(message.startswith("coverage:missing_concepts:") for message in messages):
+        return "field_planning"
+    if any(
+        message.startswith(prefix)
+        for message in messages
+        for prefix in (
+            "coverage:incomplete_object_contracts:",
+            "coverage:missing_evidence_contracts:",
+            "coverage:unmapped_domain_fields:",
+            "coverage:untraced_query_requirements:",
+        )
+    ):
+        return "schema_design"
+    if any("figure_constraint" in message or message.startswith("coverage:figure_") for message in messages):
+        return "figure_classification"
+    return None
+
+
 def supervisor_router_node(state):
     """Supervisor node: classify failures and choose the next graph step."""
     errors = state.get("validation_errors") or []
@@ -324,8 +412,19 @@ def supervisor_router_node(state):
     retry_count = int(retry_counts.get(error_node, 0))
     args = dict_to_namespace(state["args"])
     max_supervisor_retries = int(getattr(args, "max_supervisor_retries", 1) or 1)
+    repair_target = coverage_repair_target(errors)
 
-    if (
+    if repair_target and retry_count < max_supervisor_retries:
+        retry_counts[error_node] = retry_count + 1
+        decision = {
+            "action": "repair_coverage",
+            "reason": "Deterministic coverage validation selected the owning upstream module.",
+            "error_node": error_node,
+            "error_type": error_type,
+            "retry_count": retry_counts[error_node],
+            "next_node": repair_target,
+        }
+    elif (
         error_node == "schema_design"
         and error_type in {"json_parse_failure", "schema_validation_failure", "module_failure"}
         and retry_count < max_supervisor_retries
@@ -597,14 +696,16 @@ def human_advice_gate_node(state):
     current_advice = shared["human_advice"]
     previously_applied_advice = str(state.get("applied_human_advice") or "").strip()
     current_advice_already_applied = bool(
-        state.get("human_review_applied")
-        and current_advice
-        and current_advice == previously_applied_advice
+        current_advice
+        and (
+            shared.get("human_advice_available_before_design")
+            or (state.get("human_review_applied") and current_advice == previously_applied_advice)
+        )
     )
     if current_advice_already_applied or advice_is_acceptance(current_advice):
         outputs["human_advice_gate"] = {
             "status": "accepted",
-            "position": "after_internal_field_design_pass",
+            "position": "before_requirement_contract" if shared.get("human_advice_available_before_design") else "after_internal_field_design_pass",
             "human_advice": current_advice,
             "reason": "Human expert review accepted the internally passing field design, or the same advice was already applied.",
         }
@@ -698,6 +799,20 @@ def figure_classification_node(state):
 
 
 def schema_design_node(state):
+    if should_compile_schema_deterministically(state):
+        update = compile_schema_from_field_planning(
+            state,
+            "the complete field plan is too large for one reliable model response",
+        )
+        update = clear_downstream_outputs(
+            update,
+            ["specialization_critic_module", "aggregation"],
+        )
+        update["validation_errors"] = []
+        update["status"] = "running"
+        update["next_node"] = "specialization_critic"
+        return write_state_snapshot(update, "schema_design", "specialization_critic")
+
     outputs = state["module_outputs"]
     update = call_module_node(
         state,
@@ -1190,6 +1305,237 @@ def infer_rebuild_figure_constraint(field_path, section_id, source_basis):
         "allowed_figure_categories": [category],
         "why_needed": "Figure-linked evidence must stay owned by the section that contains the measured or observed information.",
     }
+
+
+DETERMINISTIC_SCHEMA_COMPILATION_THRESHOLD = 100
+
+
+def planned_field_count(state):
+    groups = (
+        ((state.get("module_outputs") or {}).get("field_planning_module") or {}).get("field_groups")
+        or []
+    )
+    return sum(
+        len(group.get("recommended_fields") or [])
+        for group in groups
+        if isinstance(group, dict)
+    )
+
+
+def should_compile_schema_deterministically(state):
+    return bool(state.get("force_deterministic_schema_compilation")) or (
+        planned_field_count(state) >= DETERMINISTIC_SCHEMA_COMPILATION_THRESHOLD
+    )
+
+
+def concept_match_score(concept, field_path):
+    def normalized_tokens(value):
+        tokens = set(section_agent.stable_concept_id(value).split("_"))
+        return {token[:-1] if len(token) > 4 and token.endswith("s") else token for token in tokens}
+
+    path_tokens = normalized_tokens(field_path)
+    concept_tokens = normalized_tokens(
+        section_agent.stable_concept_id(
+            f"{concept.get('concept_id', '')} {concept.get('label', '')}"
+        )
+    )
+    ignored = {"a", "an", "and", "of", "the", "value", "data", "information"}
+    concept_tokens -= ignored
+    overlap = len(path_tokens & concept_tokens)
+    required_overlap = 1 if len(concept_tokens) <= 1 else 2
+    return overlap if overlap >= required_overlap else 0
+
+
+def object_contract_for_kind(object_kind):
+    object_kind = str(object_kind or "measurement").strip().lower()
+    required = {
+        "measurement": ["value", "conditions", "entity_ref", "source_type", "evidence", "confidence"],
+        "classification": ["label", "assignment_basis", "source_type", "evidence", "confidence"],
+        "entity_descriptor": ["identity", "evidence"],
+        "process": ["method", "conditions", "entity_ref", "evidence"],
+        "evidence_collection": ["evidence"],
+    }
+    if object_kind not in required:
+        object_kind = "measurement"
+    return {"object_kind": object_kind, "required_subfields": required[object_kind]}
+
+
+def infer_object_kind(field_path, concepts):
+    explicit_kinds = [
+        str(concept.get("object_kind") or "").strip().lower()
+        for concept in concepts
+        if concept.get("object_kind") and concept.get("object_kind") != "scalar"
+    ]
+    if explicit_kinds:
+        return explicit_kinds[0]
+    lowered = str(field_path).lower()
+    if any(token in lowered for token in ("fabrication", "synthesis", "processing", "growth")):
+        return "process"
+    if any(token in lowered for token in ("classification", "assignment", "phase_label")):
+        return "classification"
+    if any(token in lowered for token in ("metadata", "identity", "descriptor")):
+        return "entity_descriptor"
+    if any(token in lowered for token in ("evidence", "figure", "table", "source")):
+        return "evidence_collection"
+    return "measurement"
+
+
+def concept_owner_prefix(concept):
+    owner = str(concept.get("owner_key") or "material_info")
+    if owner != "material_info":
+        return owner
+    object_kind = str(concept.get("object_kind") or "scalar").lower()
+    label = str(concept.get("label") or "").lower()
+    if object_kind == "process":
+        return "material_info.section2"
+    if object_kind == "evidence_collection":
+        return "material_info.section4"
+    if any(token in label for token in ("theory", "mechanism", "calculated", "simulation", "model")):
+        return "section5"
+    if any(token in label for token in ("identity", "composition", "formula", "material system", "sample name")):
+        return "material_info.section0"
+    return "material_info.section1"
+
+
+def compile_schema_from_field_planning(state, reason):
+    """Compile every planned field locally when one-shot schema generation is too large."""
+    outputs = deepcopy(state.get("module_outputs", {}))
+    shared = state.get("shared_context") or {}
+    subjective = outputs.get("subjective_supervisor_module") or {}
+    requirement_contract = section_agent.normalize_requirement_contract(shared, subjective)
+    concepts = requirement_contract.get("concepts") or []
+    entities = section_agent.normalize_entity_registry(subjective, requirement_contract)
+    field_groups = (outputs.get("field_planning_module") or {}).get("field_groups") or []
+    registry = []
+    existing_paths = set()
+
+    for group in field_groups:
+        if not isinstance(group, dict):
+            continue
+        fallback_section_id = str(group.get("section_id") or "material_info.section1")
+        evidence_strategy = str(group.get("evidence_strategy") or "")
+        group_context = " ".join(
+            str(group.get(key) or "") for key in ("group_name", "purpose", "evidence_strategy")
+        )
+        for raw_path in group.get("recommended_fields") or []:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            field_path = canonicalize_rebuild_field_path(raw_path, fallback_section_id)
+            root = field_path.split(".", 1)[0]
+            if root not in DEFAULT_SCHEMA_ROOTS and root not in SUPERVISOR_EXTENSION_ROOTS:
+                continue
+            if field_path in existing_paths:
+                continue
+            match_context = f"{field_path} {group_context}"
+            matches = [concept for concept in concepts if concept_match_score(concept, match_context) > 0]
+            data_type = infer_data_type_from_field_path(field_path)
+            if any(str(concept.get("object_kind") or "scalar").lower() != "scalar" for concept in matches):
+                data_type = "array of objects"
+            field = {
+                "field_path": field_path,
+                "section_id": infer_section_from_field_path(field_path, fallback_section_id),
+                "field_name": field_path.rsplit(".", 1)[-1],
+                "data_type": data_type,
+                "required": False,
+                "source_basis": infer_source_basis_from_field_path(field_path, evidence_strategy),
+                "concept_ids": [concept["concept_id"] for concept in matches],
+                "figure_constraint": None,
+                "reason": f"Compiled from field_planning_module because {reason}",
+            }
+            field["figure_constraint"] = infer_rebuild_figure_constraint(
+                field_path, field["section_id"], field["source_basis"]
+            )
+            if "object" in data_type:
+                object_kind = infer_object_kind(field_path, matches)
+                field["object_contract"] = object_contract_for_kind(object_kind)
+            registry.append(field)
+            existing_paths.add(field_path)
+
+    mapped = {
+        concept_id
+        for field in registry
+        for concept_id in field.get("concept_ids") or []
+    }
+    for concept in concepts:
+        concept_id = concept.get("concept_id")
+        if not concept_id or concept_id in mapped:
+            continue
+        owner = concept_owner_prefix(concept)
+        field_path = f"{owner}.{concept_id}"
+        if field_path in existing_paths:
+            continue
+        object_kind = str(concept.get("object_kind") or "scalar").lower()
+        data_type = "array of objects" if object_kind != "scalar" else "string"
+        field = {
+            "field_path": field_path,
+            "section_id": infer_section_from_field_path(field_path),
+            "field_name": concept_id,
+            "data_type": data_type,
+            "required": bool(concept.get("required")),
+            "source_basis": list(concept.get("evidence_types") or ["text"]),
+            "concept_ids": [concept_id],
+            "figure_constraint": None,
+            "reason": "Fallback owner field ensures every required concept has an executable schema target.",
+        }
+        if "object" in data_type:
+            field["object_contract"] = object_contract_for_kind(object_kind)
+        registry.append(field)
+        existing_paths.add(field_path)
+
+    top_level_keys = deepcopy(MATERIAL_TOP_LEVEL_KEYS)
+    top_level_names = {item["key"] for item in top_level_keys}
+    for entity in entities:
+        owner = str(entity.get("owner_key") or "").strip()
+        if not owner or owner in top_level_names:
+            continue
+        top_level_keys.append(
+            {"key": owner, "description": f"Independent owner for {entity.get('label') or entity.get('entity_id')} records."}
+        )
+        top_level_names.add(owner)
+        if entity.get("required") and entity.get("independent_owner") and not any(
+            item["field_path"].startswith(f"{owner}.") for item in registry
+        ):
+            entity_concept_ids = [
+                concept.get("concept_id")
+                for concept in concepts
+                if concept.get("entity_id") == entity.get("entity_id") and concept.get("concept_id")
+            ]
+            registry.append(
+                {
+                    "field_path": f"{owner}.identity",
+                    "section_id": owner,
+                    "field_name": "identity",
+                    "data_type": "object",
+                    "required": True,
+                    "source_basis": ["text"],
+                    "concept_ids": entity_concept_ids,
+                    "object_contract": object_contract_for_kind("entity_descriptor"),
+                    "figure_constraint": None,
+                    "reason": "Required independent entity owner identity contract.",
+                }
+            )
+
+    schema = {"top_level_keys": top_level_keys, "field_registry": registry}
+    outputs["schema_design_module"] = schema
+    module_attempts = deepcopy(state.get("module_attempts", {}))
+    module_attempts["schema_design_module"] = [
+        *module_attempts.get("schema_design_module", []),
+        {
+            "round": len(module_attempts.get("schema_design_module", [])) + 1,
+            "prompt": "deterministic_compile_schema_from_field_planning",
+            "raw_response": json.dumps(schema, ensure_ascii=False),
+        },
+    ]
+    module_errors = deepcopy(state.get("module_errors", {}))
+    module_errors["schema_design_module"] = []
+    return merge_update(
+        state,
+        {
+            "module_outputs": outputs,
+            "module_attempts": module_attempts,
+            "module_errors": module_errors,
+        },
+    )
 
 
 def rebuild_material_schema_from_field_planning(state, reason):
@@ -2006,6 +2352,9 @@ def aggregation_node(state):
     update["result"] = final_result
     update["validation_errors"] = validation_errors
     update["status"] = "success" if not validation_errors else "needs_review"
+    if validation_errors:
+        update["last_error_node"] = "aggregation"
+        update["last_error_type"] = "schema_validation_failure"
     update["next_node"] = "human_advice_gate"
     return write_state_snapshot(update, "aggregation", "human_advice_gate")
 
@@ -2194,10 +2543,20 @@ def main():
     resume_from_state = args_dict.pop("resume_from_state")
 
     if resume_from_state:
-        initial_state = load_state_snapshot(resume_from_state)
+        loaded_snapshot = load_state_snapshot(resume_from_state)
+        if loaded_snapshot.get("step") == "step8_section_design_agent_checkpoint":
+            initial_state = migrate_legacy_modular_checkpoint(loaded_snapshot, args_dict)
+            snapshot_args = initial_state["args"]
+        else:
+            initial_state = loaded_snapshot
+            snapshot_args = deepcopy(initial_state.get("args", {}))
+            for key in ("api_key", "base_url", "model", "request_timeout"):
+                cli_value = getattr(args, key, None)
+                if cli_value:
+                    snapshot_args[key] = cli_value
+            initial_state["args"] = snapshot_args
         if args.human_advice or args.human_advice_path:
             human_advice = args.human_advice or section_agent.load_optional_text(args.human_advice_path)
-            snapshot_args = deepcopy(initial_state.get("args", {}))
             snapshot_args["human_advice"] = human_advice
             snapshot_args["human_advice_path"] = ""
             shared = deepcopy(initial_state.get("shared_context", {}))

@@ -1,0 +1,3 @@
+# Test/runtime context for generic Step8 validation runs.
+# It intentionally contains no superconducting, magnetic, or other domain field template.
+schema_policy: derive atomic concepts, entity owners, field paths, object contracts, and evidence requirements from the database goal, query requirements, expert advice, and reference documents.

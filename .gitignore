@@ -13,6 +13,7 @@ __pycache__/
 
 *_runs/
 generated_code/
+agent_outputs/
 
 *.pdf
 downloaded_papers/

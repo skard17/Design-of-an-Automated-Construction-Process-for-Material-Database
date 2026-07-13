@@ -132,6 +132,8 @@ MODULE_SCHEMAS = {
             "database_nature",
             "modeling_position",
             "must_have_concepts",
+            "requirement_contract",
+            "entity_registry",
             "must_not_become",
             "red_flags",
             "approved_section_strategy",
@@ -142,6 +144,8 @@ MODULE_SCHEMAS = {
           "database_nature": "string",
           "modeling_position": "string",
           "must_have_concepts": ["string"],
+          "requirement_contract": {"concepts": [{"concept_id": "string", "label": "string"}]},
+          "entity_registry": [{"entity_id": "material", "owner_key": "material_info"}],
           "must_not_become": ["string"],
           "red_flags": ["string"],
           "approved_section_strategy": ["string"],
@@ -513,6 +517,11 @@ def validate_module_result(module_name, result):
             errors.append("subjective_supervisor_module.must_have_concepts must be a non-empty list")
         if not isinstance(result.get("must_not_become"), list) or not result.get("must_not_become"):
             errors.append("subjective_supervisor_module.must_not_become must be a non-empty list")
+        requirement_contract = result.get("requirement_contract")
+        if not isinstance(requirement_contract, dict) or not isinstance(requirement_contract.get("concepts"), list) or not requirement_contract.get("concepts"):
+            errors.append("subjective_supervisor_module.requirement_contract.concepts must be a non-empty list")
+        if not isinstance(result.get("entity_registry"), list) or not result.get("entity_registry"):
+            errors.append("subjective_supervisor_module.entity_registry must be a non-empty list")
     if module_name == "field_planning_module":
         if not isinstance(result.get("field_groups"), list) or not result.get("field_groups"):
             errors.append("field_planning_module.field_groups must be a non-empty list")
@@ -826,63 +835,461 @@ def validate_result(result):
     return errors
 
 
-def validate_specialization(shared_context, modules, result):
-    errors = []
-    query_requirements = [str(item).lower() for item in shared_context.get("query_requirements", [])]
-    database_goal = str(shared_context.get("database_goal", "")).lower()
-    field_registry = (((result or {}).get("schema_definition") or {}).get("field_registry")) or []
-    field_paths = [field.get("field_path", "") for field in field_registry if isinstance(field, dict)]
-    field_paths_lower = [item.lower() for item in field_paths]
+STANDARD_UNMAPPED_FIELD_PATTERNS = (
+    ".evidence.",
+    ".measurement_conditions.",
+    ".identity_confidence",
+    ".assignment_basis",
+    ".fitting_details.",
+    ".calculated_parameter.",
+    ".mechanism_interpretation.",
+    ".theoretical_model.",
+    ".theory_figures.",
+    ".competing_phases",
+)
+STANDARD_UNMAPPED_ROOTS = (
+    "paper_info.",
+    "primary_signature",
+    "normalization_aliases",
+    "material_name_aliases",
+    "formula_aliases",
+    "sample_id_aliases",
+)
+STANDARD_UNMAPPED_PATHS = {
+    "material_info.section0.formula",
+    "material_info.section0.family",
+    "material_info.section0.space_group",
+    "material_info.section0.stack_descriptor",
+    "material_info.section0.secondary_phases",
+    "material_info.section0.carrier_concentration",
+    "material_info.section0.electronic_state_tuning_mechanism",
+    "material_info.section3.characterization_method",
+    "material_info.section3.instrument_parameters",
+    "material_info.section3.measurement_conditions",
+}
+OBJECT_KIND_REQUIRED_SLOTS = {
+    "measurement": {"value", "conditions", "entity_ref", "source_type", "evidence", "confidence"},
+    "classification": {"label", "assignment_basis", "source_type", "evidence", "confidence"},
+    "entity_descriptor": {"identity", "evidence"},
+    "process": {"method", "conditions", "entity_ref", "evidence"},
+    "evidence_collection": {"evidence"},
+}
 
-    # Generic validation only: domain-specific validators should live in
-    # opt-in profiles, not in the default Step 8 workflow.
-    if any("图表" in str(req) or "chart" in str(req).lower() for req in shared_context.get("query_requirements", [])):
-        if not any("evidence" in path for path in field_paths_lower):
-            errors.append("query coverage weak: chart-evidence retrieval requested but no evidence-linked field found")
-    return errors
 
-    if "skyrmion" in database_goal or "斯格明子" in shared_context.get("database_goal", ""):
-        required_pattern_groups = {
-            "inversion_symmetry_broken": ["inversion_symmetry_broken"],
-            "dmi": ["dmi"],
-            "anisotropy": ["anisotropy"],
-            "phase_window": ["phase_window", "stability_window"],
-            "evidence": ["evidence"],
-        }
-        for label, patterns in required_pattern_groups.items():
-            if not any(any(pattern in path for pattern in patterns) for path in field_paths_lower):
-                errors.append(f"specialization missing skyrmion-critical concept: {label}")
-        experimentally_useful_patterns = [
-            "phase_identity.phase_type",
-            "phase_identity.assignment_basis",
-            "phase_identity.primary_method",
-            "phase_identity.supporting_methods",
-            "phase_identity.confidence_level",
-            "phase_identity.hall_only_risk_flag",
-            "dmi_source_type",
-            "dmi_estimation_method",
-            "dmi_evidence_links",
-            "hamiltonian_terms",
-            "calculation_or_simulation_method",
-        ]
-        for pattern in experimentally_useful_patterns:
-            if not any(pattern in path for path in field_paths_lower):
-                errors.append(f"specialization missing experimentally useful provenance field: {pattern}")
-        if any(path.endswith(".figure") and "section1_skyrmion" in path.lower() for path in field_paths_lower):
-            errors.append("specialization warning: generic section1_skyrmion.figure field should be replaced by object-level evidence links")
-        if any(
-            "phase_type" in path and ("hall" in path or "the" in path or "rho_xy" in path)
-            for path in field_paths_lower
-        ):
-            errors.append(
-                "specialization risk: Hall/THE transport fields must not directly own phase_type; use transport evidence plus phase_identity confidence/risk fields"
+def stable_concept_id(value):
+    text = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return text[:96] or "concept"
+
+
+def atomize_query_requirement(requirement):
+    text = str(requirement or "").strip()
+    text = re.sub(
+        r"^(?:search\s+by|compare|retrieve|record|cover|include|separate|extract|identify)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    parts = re.split(r"\s*(?:,|;|/|\band\b)\s*", text, flags=re.IGNORECASE)
+    labels = []
+    for part in parts:
+        label = re.sub(r"^(?:and|or)\s+", "", part.strip(), flags=re.IGNORECASE)
+        label = re.sub(r"\s+", " ", label).strip(" .:-")
+        if label and label.lower() not in {"and", "or"}:
+            labels.append(label)
+    return list(dict.fromkeys(labels))
+
+
+def infer_requirement_entity(label):
+    lowered = str(label or "").lower()
+    if any(token in lowered for token in ("device", "junction", "electrode")):
+        return "device", "device_info"
+    if any(token in lowered for token in ("interface", "heterostructure", "boundary")):
+        return "interface", "interface_info"
+    if any(token in lowered for token in ("reaction", "catalysis")):
+        return "reaction", "reaction_info"
+    return "material", "material_info"
+
+
+def append_atomic_requirement_concepts(concepts, seen_ids, requirement_id, requirement):
+    for label in atomize_query_requirement(requirement):
+        concept_id = stable_concept_id(label)
+        if concept_id in seen_ids:
+            existing = next(item for item in concepts if item["concept_id"] == concept_id)
+            existing["source_requirement_ids"] = list(
+                dict.fromkeys([*existing.get("source_requirement_ids", []), requirement_id])
             )
+            continue
+        entity_id, owner_key = infer_requirement_entity(label)
+        lowered = label.lower()
+        if any(token in lowered for token in ("synthesis", "fabrication", "growth", "processing")):
+            object_kind = "process"
+        elif any(token in lowered for token in ("evidence", "figure", "table", "spectrum", "curve")):
+            object_kind = "evidence_collection"
+        elif re.fullmatch(r"[a-z0-9]{1,2}\s*[-_]\s*[a-z0-9]{1,2}", lowered):
+            object_kind = "evidence_collection"
+        elif any(token in lowered for token in ("label", "classification", "symmetry", "polarity", "state")):
+            object_kind = "classification"
+        elif any(
+            token in lowered
+            for token in (
+                "temperature",
+                "current",
+                "field",
+                "pressure",
+                "range",
+                "depth",
+                "length",
+                "response",
+                "efficiency",
+                "resistance",
+                "resistivity",
+                "susceptibility",
+            )
+        ):
+            object_kind = "measurement"
+        else:
+            object_kind = "scalar"
+        concepts.append(
+            {
+                "concept_id": concept_id,
+                "label": label,
+                "required": True,
+                "entity_id": entity_id,
+                "owner_key": owner_key,
+                "object_kind": object_kind,
+                "condition_requirements": [],
+                "evidence_types": ["text"],
+                "source_requirement_ids": [requirement_id],
+            }
+        )
+        seen_ids.add(concept_id)
 
-    if any("图表" in req or "chart" in req for req in shared_context.get("query_requirements", [])):
-        if not any("evidence" in path for path in field_paths_lower):
-            errors.append("query coverage weak: chart-evidence retrieval requested but no evidence-linked field found")
 
+def normalize_requirement_contract(shared_context, subjective_result):
+    raw_contract = subjective_result.get("requirement_contract") if isinstance(subjective_result, dict) else None
+    raw_contract = raw_contract if isinstance(raw_contract, dict) else {}
+    raw_concepts = raw_contract.get("concepts")
+    if not isinstance(raw_concepts, list) or not raw_concepts:
+        raw_concepts = subjective_result.get("must_have_concepts", []) if isinstance(subjective_result, dict) else []
+
+    concepts = []
+    seen_ids = set()
+    for raw in raw_concepts or []:
+        item = dict(raw) if isinstance(raw, dict) else {"label": str(raw)}
+        label = str(item.get("label") or item.get("name") or item.get("concept_id") or "").strip()
+        concept_id = stable_concept_id(item.get("concept_id") or label)
+        if not label or concept_id in seen_ids:
+            continue
+        seen_ids.add(concept_id)
+        concepts.append(
+            {
+                "concept_id": concept_id,
+                "label": label,
+                "required": bool(item.get("required", True)),
+                "entity_id": str(item.get("entity_id") or "material"),
+                "owner_key": str(item.get("owner_key") or "material_info"),
+                "object_kind": str(item.get("object_kind") or "scalar"),
+                "condition_requirements": list(item.get("condition_requirements") or []),
+                "evidence_types": list(item.get("evidence_types") or ["text"]),
+                "source_requirement_ids": list(item.get("source_requirement_ids") or []),
+            }
+        )
+
+    for index, requirement in enumerate(shared_context.get("query_requirements", []) or [], start=1):
+        append_atomic_requirement_concepts(
+            concepts,
+            seen_ids,
+            f"query_{index}",
+            requirement,
+        )
+
+    source_requirements = [
+        {"requirement_id": f"query_{index}", "source": "query_requirement", "text": str(requirement)}
+        for index, requirement in enumerate(shared_context.get("query_requirements", []) or [], start=1)
+    ]
+    human_advice = str(shared_context.get("human_advice") or "").strip()
+    if human_advice:
+        append_atomic_requirement_concepts(
+            concepts,
+            seen_ids,
+            "human_advice",
+            human_advice,
+        )
+        source_requirements.append(
+            {"requirement_id": "human_advice", "source": "human_expert", "text": human_advice}
+        )
+
+    traced_ids = {
+        str(requirement_id)
+        for concept in concepts
+        for requirement_id in concept.get("source_requirement_ids", [])
+        if requirement_id
+    }
+    for source_requirement in source_requirements:
+        requirement_id = source_requirement["requirement_id"]
+        if requirement_id in traced_ids or not concepts:
+            continue
+        requirement_tokens = set(stable_concept_id(source_requirement.get("text")).split("_"))
+        best_concept = max(
+            concepts,
+            key=lambda concept: len(
+                requirement_tokens
+                & set(
+                    stable_concept_id(
+                        f"{concept.get('concept_id', '')} {concept.get('label', '')}"
+                    ).split("_")
+                )
+            ),
+        )
+        best_concept["source_requirement_ids"] = list(
+            dict.fromkeys([*best_concept.get("source_requirement_ids", []), requirement_id])
+        )
+        traced_ids.add(requirement_id)
+
+    reference_count = int(shared_context.get("reference_paper_count", 0) or 0)
+    broad_goal = any(
+        token in str(shared_context.get("database_goal", "")).lower()
+        for token in ("general", "broad", "across", "covering", "通用", "广泛", "覆盖")
+    )
+    return {
+        "concepts": concepts,
+        "source_requirements": source_requirements,
+        "reference_representativeness": {
+            "reference_count": reference_count,
+            "broad_goal": broad_goal,
+            "risk": "broad_goal_with_single_reference" if broad_goal and reference_count <= 1 else "none",
+        },
+    }
+
+
+def normalize_entity_registry(subjective_result, requirement_contract):
+    raw_entities = subjective_result.get("entity_registry", []) if isinstance(subjective_result, dict) else []
+    entities = []
+    seen = set()
+    for raw in raw_entities or []:
+        if not isinstance(raw, dict):
+            continue
+        entity_id = stable_concept_id(raw.get("entity_id") or raw.get("label"))
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        entities.append(
+            {
+                "entity_id": entity_id,
+                "label": str(raw.get("label") or entity_id),
+                "required": bool(raw.get("required", True)),
+                "owner_key": str(
+                    raw.get("owner_key") or ("material_info" if entity_id == "material" else f"{entity_id}_info")
+                ),
+                "independent_owner": bool(raw.get("independent_owner", entity_id != "material")),
+            }
+        )
+    concept_entities = {
+        item.get("entity_id") for item in requirement_contract.get("concepts", []) if item.get("entity_id")
+    }
+    for entity_id in sorted(concept_entities - seen):
+        entities.append(
+            {
+                "entity_id": entity_id,
+                "label": entity_id.replace("_", " ").title(),
+                "required": True,
+                "owner_key": "material_info" if entity_id == "material" else f"{entity_id}_info",
+                "independent_owner": entity_id != "material",
+            }
+        )
+    return entities
+
+
+def is_standard_unmapped_field(field_path):
+    return field_path in STANDARD_UNMAPPED_PATHS or field_path.startswith(STANDARD_UNMAPPED_ROOTS) or any(
+        pattern in field_path for pattern in STANDARD_UNMAPPED_FIELD_PATTERNS
+    )
+
+
+def object_contract_missing_slots(field):
+    if "object" not in str(field.get("data_type") or "").lower():
+        return set()
+    contract = field.get("object_contract")
+    if not isinstance(contract, dict):
+        return {"object_contract"}
+    object_kind = str(contract.get("object_kind") or field.get("object_kind") or "").strip().lower()
+    required_subfields = {
+        str(item).strip() for item in contract.get("required_subfields", []) if str(item).strip()
+    }
+    if not object_kind or not required_subfields:
+        return {"object_kind", "required_subfields"}
+    expected = OBJECT_KIND_REQUIRED_SLOTS.get(object_kind, {"evidence"})
+    present_slots = {str(item).rsplit(".", 1)[-1] for item in required_subfields}
+    return expected - present_slots
+
+
+def build_coverage_report(result):
+    has_contract = isinstance(result, dict) and "requirement_contract" in result
+    contract = result.get("requirement_contract") if has_contract else {}
+    contract = contract if isinstance(contract, dict) else {}
+    concepts = [item for item in contract.get("concepts", []) if isinstance(item, dict)]
+    required_concepts = {
+        str(item.get("concept_id")) for item in concepts if item.get("required") and item.get("concept_id")
+    }
+    fields = (((result or {}).get("schema_definition") or {}).get("field_registry")) or []
+    mapped_concepts = {
+        str(concept_id)
+        for field in fields
+        if isinstance(field, dict)
+        for concept_id in field.get("concept_ids", []) or []
+        if concept_id
+    }
+    missing_concepts = sorted(required_concepts - mapped_concepts)
+    concept_ratio = (
+        1.0
+        if not required_concepts
+        else (len(required_concepts) - len(missing_concepts)) / len(required_concepts)
+    )
+
+    top_level_keys = {
+        str(item.get("key"))
+        for item in (((result or {}).get("schema_definition") or {}).get("top_level_keys") or [])
+        if isinstance(item, dict) and item.get("key")
+    }
+    field_paths = [str(field.get("field_path") or "") for field in fields if isinstance(field, dict)]
+    entities = (
+        [item for item in (result.get("entity_registry") or []) if isinstance(item, dict)]
+        if isinstance(result, dict)
+        else []
+    )
+    required_entities = [item for item in entities if item.get("required") and item.get("independent_owner")]
+    missing_entities = sorted(
+        str(item.get("entity_id"))
+        for item in required_entities
+        if str(item.get("owner_key") or "") not in top_level_keys
+        or not any(path.startswith(f"{item.get('owner_key')}.") for path in field_paths)
+    )
+
+    incomplete_fields = []
+    object_missing_slots = {}
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        missing_slots = object_contract_missing_slots(field)
+        if missing_slots:
+            field_path = str(field.get("field_path") or "<unknown>")
+            incomplete_fields.append(field_path)
+            object_missing_slots[field_path] = sorted(missing_slots)
+
+    required_evidence_missing = []
+    for concept_id in required_concepts:
+        concept_fields = [
+            field
+            for field in fields
+            if isinstance(field, dict) and concept_id in (field.get("concept_ids") or [])
+        ]
+        if concept_fields and not any(field.get("source_basis") for field in concept_fields):
+            required_evidence_missing.append(concept_id)
+
+    registered_entity_identity_paths = {
+        f"{str(entity.get('owner_key')).strip()}.identity"
+        for entity in entities
+        if str(entity.get("owner_key") or "").strip()
+    }
+    unrelated_fields = [
+        str(field.get("field_path") or "")
+        for field in fields
+        if isinstance(field, dict)
+        and not (field.get("concept_ids") or [])
+        and not is_standard_unmapped_field(str(field.get("field_path") or ""))
+        and str(field.get("field_path") or "") not in registered_entity_identity_paths
+    ]
+    source_requirements = contract.get("source_requirements", [])
+    traced_requirement_ids = {
+        str(req_id)
+        for concept in concepts
+        for req_id in concept.get("source_requirement_ids", []) or []
+        if req_id
+    }
+    missing_requirement_ids = sorted(
+        str(item.get("requirement_id"))
+        for item in source_requirements
+        if isinstance(item, dict) and item.get("requirement_id") not in traced_requirement_ids
+    )
+    return {
+        "legacy_mode": not has_contract,
+        "required_concept_coverage": {
+            "required": len(required_concepts),
+            "covered": len(required_concepts) - len(missing_concepts),
+            "ratio": concept_ratio,
+            "missing_concept_ids": missing_concepts,
+        },
+        "entity_owner_coverage": {
+            "required": len(required_entities),
+            "covered": len(required_entities) - len(missing_entities),
+            "missing_entity_ids": missing_entities,
+        },
+        "structured_object_completeness": {
+            "incomplete_fields": sorted(incomplete_fields),
+            "missing_slots": object_missing_slots,
+        },
+        "evidence_contract_coverage": {"missing_concept_ids": sorted(required_evidence_missing)},
+        "query_requirement_traceability": {"missing_requirement_ids": missing_requirement_ids},
+        "unrelated_domain_field_count": len(unrelated_fields),
+        "unrelated_domain_fields": sorted(unrelated_fields),
+    }
+
+
+def validate_coverage_report(report):
+    if report.get("legacy_mode"):
+        return []
+    errors = []
+    checks = (
+        ("coverage:missing_concepts:", report.get("required_concept_coverage", {}).get("missing_concept_ids", [])),
+        ("coverage:missing_entity_owners:", report.get("entity_owner_coverage", {}).get("missing_entity_ids", [])),
+        (
+            "coverage:incomplete_object_contracts:",
+            report.get("structured_object_completeness", {}).get("incomplete_fields", []),
+        ),
+        (
+            "coverage:missing_evidence_contracts:",
+            report.get("evidence_contract_coverage", {}).get("missing_concept_ids", []),
+        ),
+        (
+            "coverage:untraced_query_requirements:",
+            report.get("query_requirement_traceability", {}).get("missing_requirement_ids", []),
+        ),
+        ("coverage:unmapped_domain_fields:", report.get("unrelated_domain_fields", [])),
+    )
+    for prefix, values in checks:
+        if values:
+            errors.append(prefix + ",".join(values))
     return errors
+
+
+def coverage_blocker_sets(report):
+    return {
+        "concepts": set(report.get("required_concept_coverage", {}).get("missing_concept_ids", [])),
+        "entities": set(report.get("entity_owner_coverage", {}).get("missing_entity_ids", [])),
+        "objects": set(report.get("structured_object_completeness", {}).get("incomplete_fields", [])),
+        "evidence": set(report.get("evidence_contract_coverage", {}).get("missing_concept_ids", [])),
+        "requirements": set(report.get("query_requirement_traceability", {}).get("missing_requirement_ids", [])),
+        "unrelated": set(report.get("unrelated_domain_fields", [])),
+    }
+
+
+def is_coverage_improvement(previous_report, candidate_report):
+    previous_sets = coverage_blocker_sets(previous_report)
+    candidate_sets = coverage_blocker_sets(candidate_report)
+    if any(not candidate_sets[key].issubset(previous_sets[key]) for key in previous_sets):
+        return False
+    previous_total = sum(len(values) for values in previous_sets.values())
+    candidate_total = sum(len(values) for values in candidate_sets.values())
+    previous_ratio = float(previous_report.get("required_concept_coverage", {}).get("ratio", 0) or 0)
+    candidate_ratio = float(candidate_report.get("required_concept_coverage", {}).get("ratio", 0) or 0)
+    return candidate_total < previous_total or candidate_ratio > previous_ratio
+
+
+def validate_specialization(shared_context, modules, result):
+    report = build_coverage_report(result)
+    if isinstance(result, dict):
+        result["coverage_report"] = report
+    return validate_coverage_report(report)
 
 
 def infer_figure_constraint(field):
@@ -931,7 +1338,19 @@ def infer_figure_constraint(field):
     }
 
 
-def ensure_field(field_registry, field_path, section_id, field_name, data_type, required, source_basis, reason, figure_constraint=None):
+def ensure_field(
+    field_registry,
+    field_path,
+    section_id,
+    field_name,
+    data_type,
+    required,
+    source_basis,
+    reason,
+    figure_constraint=None,
+    object_contract=None,
+    concept_ids=None,
+):
     existing_paths = {
         item.get("field_path")
         for item in field_registry
@@ -950,6 +1369,10 @@ def ensure_field(field_registry, field_path, section_id, field_name, data_type, 
     }
     if figure_constraint is not None:
         item["figure_constraint"] = figure_constraint
+    if object_contract is not None:
+        item["object_contract"] = object_contract
+    if concept_ids is not None:
+        item["concept_ids"] = list(concept_ids)
     field_registry.append(item)
 
 
@@ -1107,6 +1530,196 @@ def build_owner_field_path(result, owner_id, suffix):
     return f"material_info.{owner_id}.{suffix}"
 
 
+PROCESS_STANDARD_SECTION_ALIASES = {
+    "section0": "material_info.section0",
+    "section1": "material_info.section1",
+    "section2": "material_info.section2",
+    "section3": "material_info.section3",
+    "section4": "material_info.section4",
+    "section5": "section5",
+    "material_info.section0": "material_info.section0",
+    "material_info.section1": "material_info.section1",
+    "material_info.section2": "material_info.section2",
+    "material_info.section3": "material_info.section3",
+    "material_info.section4": "material_info.section4",
+}
+PROCESS_STANDARD_SECTIONS = set(PROCESS_STANDARD_SECTION_ALIASES.values())
+
+
+def canonical_process_section_id(value):
+    text = str(value or "").strip()
+    return PROCESS_STANDARD_SECTION_ALIASES.get(text, text)
+
+
+def collect_process_standard_sections(result, field_registry):
+    sections = []
+    seen = set()
+
+    def add_section(raw_section_id):
+        section_id = canonical_process_section_id(raw_section_id)
+        if section_id in PROCESS_STANDARD_SECTIONS and section_id not in seen:
+            seen.add(section_id)
+            sections.append(section_id)
+
+    for field in field_registry:
+        if not isinstance(field, dict):
+            continue
+        add_section(field.get("section_id"))
+        field_path = str(field.get("field_path", ""))
+        for section_id in PROCESS_STANDARD_SECTIONS:
+            if field_path.startswith(f"{section_id}."):
+                add_section(section_id)
+
+    section_design = result.get("section_design", {}) if isinstance(result, dict) else {}
+    for group_name in ("core_sections", "non_core_sections"):
+        for section in section_design.get(group_name, []) or []:
+            if isinstance(section, dict):
+                add_section(section.get("section_id"))
+
+    return sections
+
+
+def ensure_process_standard_fields(result, field_registry):
+    active_sections = collect_process_standard_sections(result, field_registry)
+    for section_id in active_sections:
+        # These are generic process-standard provenance fields for AI-built
+        # databases, not domain-specific scientific concepts.
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "evidence.source_text"),
+            section_id,
+            "Evidence Source Text",
+            "string",
+            False,
+            ["text"],
+            "Stores the exact text span or caption fragment supporting values extracted for this section.",
+        )
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "evidence.source_figure"),
+            section_id,
+            "Evidence Source Figure",
+            "string_or_array",
+            False,
+            ["figure"],
+            "Records figure or panel identifiers that support this section so figure-derived evidence remains auditable.",
+            {
+                "uses_figure_classification": True,
+                "allowed_sections": [section_id],
+                "allowed_figure_categories": ["section_evidence_figure"],
+                "why_needed": "Evidence figures must remain owned by the section whose claim or value they support.",
+            },
+        )
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "evidence.source_table"),
+            section_id,
+            "Evidence Source Table",
+            "string_or_array",
+            False,
+            ["table"],
+            "Records table identifiers that support this section so table-derived values remain traceable.",
+        )
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "evidence.confidence"),
+            section_id,
+            "Evidence Confidence",
+            "number_or_string",
+            False,
+            ["text"],
+            "Stores extraction confidence or uncertainty for section-level values and inferred labels.",
+        )
+
+    for section_id in ("material_info.section1", "material_info.section4"):
+        if section_id not in active_sections:
+            continue
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "measurement_conditions.temperature"),
+            section_id,
+            "Measurement Temperature",
+            "string_or_object",
+            False,
+            ["text", "table", "figure"],
+            "Records temperature conditions attached to scalar properties, maps, curves, or plots.",
+            object_contract={
+                "object_kind": "measurement",
+                "required_subfields": [
+                    "value",
+                    "conditions",
+                    "entity_ref",
+                    "source_type",
+                    "evidence",
+                    "confidence",
+                ],
+            },
+        )
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "measurement_conditions.external_field"),
+            section_id,
+            "External Field Or Stimulus",
+            "string_or_object",
+            False,
+            ["text", "table", "figure"],
+            "Records the external field, bias, stress, pressure, chemical stimulus, or other driving condition when relevant.",
+            object_contract={
+                "object_kind": "measurement",
+                "required_subfields": [
+                    "value",
+                    "conditions",
+                    "entity_ref",
+                    "source_type",
+                    "evidence",
+                    "confidence",
+                ],
+            },
+        )
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "measurement_conditions.field_direction"),
+            section_id,
+            "Field Direction",
+            "string",
+            False,
+            ["text", "table", "figure"],
+            "Records the direction or geometry of an applied field or stimulus when the paper reports it.",
+        )
+        ensure_field(
+            field_registry,
+            build_owner_field_path(result, section_id, "measurement_conditions.protocol"),
+            section_id,
+            "Measurement Protocol",
+            "string",
+            False,
+            ["text", "table", "figure"],
+            "Records protocol details such as zero-field-cooled/field-cooled, sweep direction, frequency, or loading path when relevant.",
+        )
+
+    if "material_info.section0" in active_sections:
+        ensure_field(
+            field_registry,
+            "material_info.section0.identity_confidence",
+            "material_info.section0",
+            "Material Identity Confidence",
+            "number_or_string",
+            False,
+            ["text"],
+            "Records confidence in normalized material identity, sample labels, composition, and tuning assignments.",
+        )
+        ensure_field(
+            field_registry,
+            "material_info.section0.assignment_basis",
+            "material_info.section0",
+            "Material Assignment Basis",
+            "string_or_array",
+            False,
+            ["text", "table", "figure"],
+            "Records the text, table, or figure evidence used to assign material identity and sample variants.",
+        )
+
+
 def postprocess_result(shared_context, result):
     if not isinstance(result, dict):
         return result
@@ -1121,6 +1734,8 @@ def postprocess_result(shared_context, result):
     general_section_id = detect_general_section_id(result)
     top_level_keys = get_top_level_key_names(result)
     normalize_source_basis_values(field_registry)
+
+    ensure_process_standard_fields(result, field_registry)
 
     for field in field_registry:
         if not isinstance(field, dict):
@@ -1178,487 +1793,6 @@ def postprocess_result(shared_context, result):
     # opt-in profile outside this generic workflow.
     return result
 
-    database_goal = str(shared_context.get("database_goal", ""))
-    if "斯格明子" in database_goal or "skyrmion" in database_goal.lower():
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "inversion_symmetry_broken"),
-            general_section_id,
-            "Inversion Symmetry Broken",
-            "string",
-            False,
-            ["text"],
-            "Records whether broken inversion symmetry is explicitly stated, which is a core prerequisite for DMI-mediated skyrmion stabilization.",
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "dmi_origin"),
-            general_section_id,
-            "DMI Origin",
-            "string",
-            False,
-            ["text"],
-            "Records the explicitly stated origin of Dzyaloshinskii-Moriya interaction such as bulk, interfacial, or otherwise discussed symmetry-breaking source.",
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "dmi_source_type"),
-            general_section_id,
-            "DMI Source Type",
-            "enum: experimental_estimate | simulation_fit | DFT_calculation | literature_assumption | author_interpretation | not_reported",
-            False,
-            ["text", "table", "figure"],
-            "Distinguishes whether DMI information is measured, fitted, simulated, DFT-derived, assumed from literature, or only interpreted by authors.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section5", "theory_mechanism", "simulation_info"],
-                "allowed_figure_categories": ["M_H", "phase_diagram_plot", "simulation_figures", "calculation_result_plot", "theoretical_model"],
-                "why_needed": "DMI provenance may come from experiment, fitting, simulation, or DFT and must not be mixed without evidence classification.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "dmi_value"),
-            general_section_id,
-            "DMI Value",
-            "number or string",
-            False,
-            ["text", "table", "figure"],
-            "Records the reported DMI magnitude only when a value is explicitly provided or extracted with a stated method.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section4_mt", "section5", "theory_mechanism", "simulation_info"],
-                "allowed_figure_categories": ["M_H", "phase_diagram_plot", "simulation_figures", "calculation_result_plot"],
-                "why_needed": "DMI values are often obtained from fitting, simulation, or DFT plots rather than direct experiment.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "dmi_unit"),
-            general_section_id,
-            "DMI Unit",
-            "string",
-            False,
-            ["text", "table"],
-            "Stores the unit attached to dmi_value so values from micromagnetic, atomistic, or DFT sources are not conflated.",
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "dmi_estimation_method"),
-            general_section_id,
-            "DMI Estimation Method",
-            "string",
-            False,
-            ["text"],
-            "Records the stated method used to obtain DMI, such as BLS, domain-wall fit, micromagnetic fitting, or DFT total-energy calculation.",
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "dmi_evidence_links"),
-            general_section_id,
-            "DMI Evidence Links",
-            "array of evidence references",
-            False,
-            ["figure", "table", "text"],
-            "Links DMI origin and values to the exact supporting evidence instead of leaving DMI as an unsupported mechanism keyword.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section5", "theory_mechanism", "simulation_info"],
-                "allowed_figure_categories": ["M_H", "domain_image", "phase_diagram_plot", "simulation_figures", "calculation_result_plot", "theoretical_model"],
-                "why_needed": "DMI support must point to the method-specific evidence source.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "magnetic_anisotropy_type"),
-            general_section_id,
-            "Magnetic Anisotropy Type",
-            "string",
-            False,
-            ["text", "figure"],
-            "Records the explicitly stated anisotropy type relevant to skyrmion stabilization.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section4_mt", "section3"],
-                "allowed_figure_categories": ["M_H", "M_T", "LTEM", "MFM"],
-                "why_needed": "Magnetic anisotropy may be concluded from magnetization curves or discussed alongside imaging evidence.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.phase_type"),
-            skyrmion_section_id,
-            "Topological Magnetic Phase Type",
-            "enum or string",
-            False,
-            ["text", "figure"],
-            "Records the claimed phase type, such as skyrmion, antiskyrmion, meron, bimeron, bubble, stripe, cycloid, helix, bobber, or hopfion.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section_magnetic_imaging", "section_magnetic_diffraction"],
-                "allowed_figure_categories": ["LTEM", "MFM", "SP_STM", "electron_holography", "SANS", "REXS", "diffraction_pattern"],
-                "why_needed": "High-confidence phase type should be assigned from direct imaging or symmetry-sensitive magnetic-structure evidence, not transport alone.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.assignment_basis"),
-            skyrmion_section_id,
-            "Phase Assignment Basis",
-            "array of strings",
-            False,
-            ["text", "figure"],
-            "Records the actual basis used to assign the phase type, such as direct imaging, symmetry plus imaging, SANS, Hall support, magnetization anomaly, or simulation comparison.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section_magnetic_imaging", "section_magnetic_diffraction", "section4_topological_transport"],
-                "allowed_figure_categories": ["LTEM", "MFM", "SP_STM", "electron_holography", "SANS", "rho_xy_H", "M_H", "phase_diagram_plot"],
-                "why_needed": "The database must preserve how the phase claim was assigned so experimental users can judge reliability.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.primary_method"),
-            skyrmion_section_id,
-            "Primary Phase Identification Method",
-            "string",
-            False,
-            ["text", "figure"],
-            "Stores the primary method supporting phase identification; direct imaging or symmetry-sensitive methods should be distinguishable from Hall-only support.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section_magnetic_imaging", "section_magnetic_diffraction", "section4_topological_transport"],
-                "allowed_figure_categories": ["LTEM", "MFM", "SP_STM", "electron_holography", "SANS", "rho_xy_H", "M_H", "phase_diagram_plot"],
-                "why_needed": "Phase identity confidence depends strongly on the primary identification method.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.supporting_methods"),
-            skyrmion_section_id,
-            "Supporting Phase Identification Methods",
-            "array of strings",
-            False,
-            ["text", "figure"],
-            "Stores secondary evidence methods supporting the phase claim without promoting weak evidence to direct identification.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section_magnetic_imaging", "section_magnetic_diffraction", "section4_topological_transport"],
-                "allowed_figure_categories": ["LTEM", "MFM", "SP_STM", "electron_holography", "SANS", "rho_xy_H", "M_H", "phase_diagram_plot"],
-                "why_needed": "Supporting evidence should be queryable separately from primary phase identification.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.confidence_level"),
-            skyrmion_section_id,
-            "Phase Identification Confidence Level",
-            "enum: high | medium | low | disputed | not_assignable",
-            False,
-            ["text", "figure"],
-            "Grades phase identity confidence based on evidence type; Hall-only transport support should generally be low confidence.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section_magnetic_imaging", "section_magnetic_diffraction", "section4_topological_transport"],
-                "allowed_figure_categories": ["LTEM", "MFM", "SP_STM", "electron_holography", "SANS", "rho_xy_H", "M_H", "phase_diagram_plot"],
-                "why_needed": "Experimental users need a confidence grade before reusing phase labels.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.hall_only_risk_flag"),
-            skyrmion_section_id,
-            "Hall-Only Phase Assignment Risk Flag",
-            "boolean",
-            False,
-            ["text", "figure"],
-            "Flags cases where the skyrmion/topological phase assignment is based only on Hall/THE transport without direct imaging or symmetry-sensitive confirmation.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section4_mt", "section4_topological_transport"],
-                "allowed_figure_categories": ["rho_xy_H", "hall_curve", "topological_hall", "transport_phase_diagram"],
-                "why_needed": "Hall-only evidence is risky for phase-type assignment and must be explicitly marked.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.evidence_links"),
-            skyrmion_section_id,
-            "Phase Identity Evidence Links",
-            "array of evidence references",
-            False,
-            ["figure", "table", "text"],
-            "Links the phase identity claim to specific imaging, diffraction, transport, text, or table evidence records.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section_magnetic_imaging", "section_magnetic_diffraction", "section4_topological_transport"],
-                "allowed_figure_categories": ["LTEM", "MFM", "SP_STM", "electron_holography", "SANS", "REXS", "rho_xy_H", "M_H", "phase_diagram_plot"],
-                "why_needed": "Phase labels must remain traceable to evidence sources.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_window.temperature_range"),
-            skyrmion_section_id,
-            "Skyrmion Phase Temperature Range",
-            "string or array of strings",
-            False,
-            ["figure", "text"],
-            "Records the temperature window of the skyrmion phase pocket rather than collapsing it into one critical field.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section4_mt"],
-                "allowed_figure_categories": ["phase_diagram_plot"],
-                "why_needed": "The skyrmion phase temperature range is typically extracted from H-T phase diagrams or equivalent transport evidence.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "phase_window.field_range"),
-            skyrmion_section_id,
-            "Skyrmion Phase Field Range",
-            "string or array of strings",
-            False,
-            ["figure", "text"],
-            "Records the field window of the skyrmion phase pocket rather than collapsing it into one critical field.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section4_mt"],
-                "allowed_figure_categories": ["phase_diagram_plot", "M_H", "rho_xy_H"],
-                "why_needed": "The skyrmion phase field range is extracted from phase-diagram or transport evidence that defines stability boundaries.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "stability_window.temperature_range"),
-            skyrmion_section_id,
-            "Stability Window Temperature Range",
-            "string or array of strings",
-            False,
-            ["figure", "text"],
-            "Records the temperature span over which the reported skyrmion phase remains stable under stated conditions.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section4_mt"],
-                "allowed_figure_categories": ["phase_diagram_plot"],
-                "why_needed": "Stability windows are usually determined from phase diagrams or equivalent mapped evidence.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "stability_window.field_range"),
-            skyrmion_section_id,
-            "Stability Window Field Range",
-            "string or array of strings",
-            False,
-            ["figure", "text"],
-            "Records the magnetic-field span over which the reported skyrmion phase remains stable under stated conditions.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section4_mt"],
-                "allowed_figure_categories": ["phase_diagram_plot", "M_H", "rho_xy_H"],
-                "why_needed": "Field stability windows are extracted from phase-diagram, Hall, or magnetization boundary evidence.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, skyrmion_section_id, "evidence_links"),
-            skyrmion_section_id,
-            "Evidence Links",
-            "array of strings",
-            False,
-            ["figure"],
-            "Aggregates evidence figure references that support skyrmion claims while preserving figure ownership in evidence sections.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt"],
-                "allowed_figure_categories": ["LTEM", "MFM", "SANS", "SP_STM", "rho_xy_H", "M_H", "phase_diagram_plot"],
-                "why_needed": "This field provides an evidence-level handle for chart and image retrieval without duplicating figure ownership.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, theory_section_id, "hamiltonian_terms"),
-            theory_section_id,
-            "Hamiltonian Terms",
-            "array of objects",
-            False,
-            ["text", "table", "figure"],
-            "Records explicit Hamiltonian terms such as exchange, DMI, anisotropy, Zeeman, and dipolar terms with parameter values when provided.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": [theory_section_id, "section5", "simulation_info"],
-                "allowed_figure_categories": ["theoretical_model", "simulation_figures", "phase_diagram_simulation", "calculation_result_plot"],
-                "why_needed": "Theory and simulation parameters must be kept separate from experimental observables.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, theory_section_id, "calculation_or_simulation_method"),
-            theory_section_id,
-            "Calculation Or Simulation Method",
-            "string",
-            False,
-            ["text"],
-            "Records whether the mechanism parameters are from DFT, micromagnetic simulation, Monte Carlo, atomistic spin simulation, analytical model, or another method.",
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "intrinsic_magnetic_parameters.determination_method"),
-            general_section_id,
-            "Intrinsic Magnetic Parameter Determination Method",
-            "string",
-            False,
-            ["text"],
-            "Records whether each intrinsic magnetic parameter was measured, fitted, estimated, simulated, or calculated.",
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "intrinsic_magnetic_parameters.source_figure"),
-            general_section_id,
-            "Intrinsic Magnetic Parameter Source Figure",
-            "string",
-            False,
-            ["figure"],
-            "Links each intrinsic magnetic parameter record to the specific source figure used for extraction or fitting.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": ["section3", "section4_mt", "section5", "simulation_info"],
-                "allowed_figure_categories": ["M_H", "M_T", "phase_diagram_plot", "simulation_figures", "calculation_result_plot"],
-                "why_needed": "Intrinsic magnetic parameters may be extracted from experiment, fitting, or simulation figures and need explicit provenance.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, theory_section_id, "theoretical_parameters.determination_method"),
-            theory_section_id,
-            "Theoretical Parameter Determination Method",
-            "string",
-            False,
-            ["text"],
-            "Records whether each theoretical or mechanism parameter comes from DFT, micromagnetic fitting, Monte Carlo, analytical modeling, or another method.",
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, theory_section_id, "theoretical_parameters.source_figure"),
-            theory_section_id,
-            "Theoretical Parameter Source Figure",
-            "string",
-            False,
-            ["figure"],
-            "Links each theoretical parameter record to the exact calculation or simulation figure that supports it.",
-            {
-                "uses_figure_classification": True,
-                "allowed_sections": [theory_section_id, "section5", "simulation_info"],
-                "allowed_figure_categories": ["theoretical_model", "simulation_figures", "phase_diagram_simulation", "calculation_result_plot"],
-                "why_needed": "Theory parameters need explicit figure provenance when they are derived from calculations, fits, or simulation outputs.",
-            },
-        )
-        ensure_field(
-            field_registry,
-            build_owner_field_path(result, general_section_id, "dmi_value.figure"),
-            general_section_id,
-            "DMI Value Source Figure",
-            "string",
-            False,
-            ["figure"],
-            "Links the reported DMI value to the exact source figure instead of leaving provenance only at the parent object level.",
-            clone_figure_constraint(
-                infer_figure_constraint(
-                    {
-                        "field_path": build_owner_field_path(result, general_section_id, "dmi_value"),
-                        "section_id": general_section_id,
-                    }
-                ),
-                why_needed="This figure link points to the source figure used to determine or fit the DMI value.",
-            ),
-        )
-        for field_path, field_name, reason, figure_constraint in [
-            (
-                build_owner_field_path(result, skyrmion_section_id, "size.figure"),
-                "Skyrmion Size Source Figure",
-                "Links the reported skyrmion size to the exact imaging or scattering figure used for extraction.",
-                {
-                    "uses_figure_classification": True,
-                    "allowed_sections": ["section3", "section4_mt", "section_magnetic_imaging", "section_magnetic_diffraction"],
-                    "allowed_figure_categories": ["LTEM", "MFM", "SANS", "SP_STM", "phase_diagram_plot"],
-                    "why_needed": "Skyrmion size should point to a concrete evidence figure instead of inheriting generic parent-level figure ownership.",
-                },
-            ),
-            (
-                build_owner_field_path(result, skyrmion_section_id, "critical_field_formation.figure"),
-                "Formation Critical Field Source Figure",
-                "Links the formation field value to the exact Hall, magnetization, or phase-diagram figure used for extraction.",
-                {
-                    "uses_figure_classification": True,
-                    "allowed_sections": ["section4_mt", "section4_topological_transport"],
-                    "allowed_figure_categories": ["rho_xy_H", "M_H", "phase_diagram_plot", "hall_curve"],
-                    "why_needed": "Formation critical fields must trace back to the curve or phase diagram from which the boundary was read.",
-                },
-            ),
-            (
-                build_owner_field_path(result, skyrmion_section_id, "critical_field_annihilation.figure"),
-                "Annihilation Critical Field Source Figure",
-                "Links the annihilation field value to the exact Hall, magnetization, or phase-diagram figure used for extraction.",
-                {
-                    "uses_figure_classification": True,
-                    "allowed_sections": ["section4_mt", "section4_topological_transport"],
-                    "allowed_figure_categories": ["rho_xy_H", "M_H", "phase_diagram_plot", "hall_curve"],
-                    "why_needed": "Annihilation critical fields must trace back to the curve or phase diagram from which the boundary was read.",
-                },
-            ),
-            (
-                build_owner_field_path(result, skyrmion_section_id, "topological_Hall_resistivity.figure"),
-                "Topological Hall Resistivity Source Figure",
-                "Links the topological Hall value to the exact transport curve used for extraction.",
-                {
-                    "uses_figure_classification": True,
-                    "allowed_sections": ["section4_mt", "section4_topological_transport"],
-                    "allowed_figure_categories": ["rho_xy_H", "hall_curve", "topological_hall"],
-                    "why_needed": "Topological Hall values must preserve transport-curve provenance.",
-                },
-            ),
-            (
-                build_owner_field_path(result, skyrmion_section_id, "helical_period.figure"),
-                "Helical Period Source Figure",
-                "Links the helical period value to the exact scattering or imaging figure used for extraction.",
-                {
-                    "uses_figure_classification": True,
-                    "allowed_sections": ["section3", "section_magnetic_diffraction", "section_magnetic_imaging"],
-                    "allowed_figure_categories": ["SANS", "REXS", "diffraction_pattern", "LTEM", "MFM"],
-                    "why_needed": "Helical period values must remain tied to the reciprocal-space or imaging evidence from which they were extracted.",
-                },
-            ),
-        ]:
-            ensure_field(
-                field_registry,
-                field_path,
-                skyrmion_section_id,
-                field_name,
-                "string",
-                False,
-                ["figure"],
-                reason,
-                figure_constraint,
-            )
-
-        for required_phase_field in [
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.phase_type"),
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.assignment_basis"),
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.primary_method"),
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.supporting_methods"),
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.confidence_level"),
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.hall_only_risk_flag"),
-            build_owner_field_path(result, skyrmion_section_id, "phase_identity.evidence_links"),
-        ]:
-            for field in field_registry:
-                if isinstance(field, dict) and field.get("field_path") == required_phase_field:
-                    field["required"] = True
-                    break
-
-    return result
-
-
 def finalize_result(shared_context, result):
     if not isinstance(result, dict):
         return result
@@ -1668,6 +1802,8 @@ def finalize_result(shared_context, result):
     field_registry = schema_definition.get("field_registry")
     if isinstance(field_registry, list):
         normalize_source_basis_values(field_registry)
+    if "requirement_contract" in result:
+        result["coverage_report"] = build_coverage_report(result)
     return result
 
 
@@ -1831,6 +1967,8 @@ def assemble_final_result_from_modules(
     if redo_needed:
         redo_reason = "; ".join(map(str, critic_result.get("redo_directives") or []))
 
+    requirement_contract = normalize_requirement_contract(shared_context, subjective_result)
+    entity_registry = normalize_entity_registry(subjective_result, requirement_contract)
     return {
         "database_positioning": {
             "database_goal": locating_result.get("database_goal", shared_context.get("database_goal", "")),
@@ -1850,6 +1988,8 @@ def assemble_final_result_from_modules(
             "top_level_keys": schema_result.get("top_level_keys", []),
             "field_registry": schema_result.get("field_registry", []),
         },
+        "requirement_contract": requirement_contract,
+        "entity_registry": entity_registry,
         "quality_check": {
             "topic_specific_adjustments": topic_adjustments,
             "coverage_check": coverage_check,
@@ -2243,6 +2383,7 @@ def run_section_design(args):
         "query_requirements": query_requirements,
         "key_description_text": key_description_text,
         "reference_paper_context": reference_paper_context,
+        "reference_paper_count": len(args.reference_papers or []),
         "human_advice": human_advice,
         "shared_context_block": build_shared_context_block(
             args.database_goal,
@@ -2265,7 +2406,17 @@ def run_section_design(args):
             redo_result = finalize_result(shared_context, redo_result)
             redo_validation_errors = validate_result(redo_result)
             redo_validation_errors.extend(validate_specialization(shared_context, module_outputs, redo_result))
-            if len(redo_validation_errors) <= len(errors):
+            previous_report = (result or {}).get("coverage_report") or build_coverage_report(result or {})
+            candidate_report = redo_result.get("coverage_report") or build_coverage_report(redo_result)
+            previous_structural = [error for error in errors if not str(error).startswith("coverage:")]
+            candidate_structural = [
+                error for error in redo_validation_errors if not str(error).startswith("coverage:")
+            ]
+            candidate_is_better = not redo_validation_errors or (
+                len(candidate_structural) <= len(previous_structural)
+                and is_coverage_improvement(previous_report, candidate_report)
+            )
+            if candidate_is_better:
                 result = redo_result
                 errors = redo_validation_errors
 
