@@ -665,6 +665,122 @@ def canonical_section_id(value: Any) -> Any:
     return text
 
 
+PAPER_METADATA_KEYS = {
+    "title": ("title",),
+    "authors": ("authors", "author_details"),
+    "doi": ("doi", "external_ids.doi"),
+    "arxiv_id": ("arxiv_id", "external_ids.arxiv", "source_id"),
+    "abstract": ("abstract",),
+    "publication_date": ("published_date", "publication_date", "year"),
+    "published_date": ("published_date", "publication_date", "year"),
+    "journal": ("journal", "venue"),
+    "venue": ("venue", "journal"),
+    "url": ("paper_url", "url", "raw_links.landing_url"),
+    "paper_url": ("paper_url", "url", "raw_links.landing_url"),
+    "pdf_url": ("pdf_url", "raw_links.pdf_url"),
+    "keywords": ("keywords", "subjects"),
+    "subjects": ("subjects", "keywords"),
+    "source": ("source",),
+    "retrieved_at": ("retrieved_at",),
+    "publisher": ("publisher",),
+    "paper_type": ("paper_type",),
+    "license": ("license",),
+}
+
+
+def nested_metadata_value(record: dict[str, Any], dotted_key: str) -> Any:
+    value: Any = record
+    for key in dotted_key.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def normalize_metadata_value(field_name: str, value: Any) -> Any:
+    if field_name == "authors" and isinstance(value, list):
+        names = []
+        for item in value:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            else:
+                name = str(item or "").strip()
+            if name:
+                names.append(name)
+        return names
+    if field_name == "doi":
+        return normalize_doi(value)
+    return value
+
+
+def metadata_value_for_field(record: dict[str, Any], field_path: str) -> Any:
+    field_name = str(field_path or "").rsplit(".", 1)[-1].casefold()
+    candidates = PAPER_METADATA_KEYS.get(field_name, (field_name,))
+    for candidate in candidates:
+        value = normalize_metadata_value(field_name, nested_metadata_value(record, candidate))
+        if not is_null_like(value):
+            return value
+    return None
+
+
+def build_paper_metadata_payload(
+    record: dict[str, Any], fields: list[str], document_name: str
+) -> dict[str, Any]:
+    source = str(record.get("source") or "upstream_metadata").strip() or "upstream_metadata"
+    source_path = str(record.get("_metadata_source_path") or "").strip()
+    source_hint = source_path or str(record.get("paper_url") or record.get("url") or source)
+    extracted = []
+    missing = []
+    for field_path in fields:
+        value = metadata_value_for_field(record, field_path)
+        if is_null_like(value):
+            missing.append(
+                {
+                    "field_path": field_path,
+                    "missing_reason": f"Not provided by upstream {source} metadata; PDF text was not used to invent bibliographic metadata.",
+                    "source_hint": source_hint,
+                }
+            )
+            continue
+        extracted.append(
+            {
+                "field_path": field_path,
+                "value": value,
+                "unit": None,
+                "material_system": None,
+                "evidence_text": f"Value supplied by the upstream {source} metadata record.",
+                "source_hint": source_hint,
+                "source_type": source,
+                "confidence": 1.0,
+            }
+        )
+    return {
+        "stage_id": "paper_info",
+        "section_id": "paper_info",
+        "document": document_name,
+        "extracted_fields": extracted,
+        "missing_fields": missing,
+        "quality_notes": ["paper_info was prefilled deterministically from retrieval/download metadata; no LLM call was used."],
+        "metadata_handoff": {
+            "source": source,
+            "source_path": source_path,
+            "paper_id": record.get("paper_id"),
+        },
+    }
+
+
+def metadata_for_document(
+    paper_metadata_by_document: dict[str, dict[str, Any]], document_path: str
+) -> dict[str, Any] | None:
+    path = Path(document_path)
+    candidates = [str(path), str(path.resolve()), path.name, path.stem]
+    for candidate in candidates:
+        value = paper_metadata_by_document.get(candidate)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def normalize_figure_sections(value: Any) -> Any:
     if isinstance(value, list):
         return [normalize_figure_sections(item) for item in value]
@@ -1066,12 +1182,15 @@ def run_extraction_bench(
     max_documents: int = 4,
     max_document_chars: int = 26000,
     max_fields_per_stage: int = 80,
+    paper_metadata_by_document: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     run_dir = Path(output_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     selected_docs = [str(Path(path)) for path in documents[:max_documents]]
     section_results = []
     dependency_outputs: dict[str, Any] = {}
+    paper_metadata_by_document = paper_metadata_by_document or {}
+    metadata_prefilled_documents = set()
 
     for stage in workflow_plan.get("section_test_plan", []):
         stage_id = stage["stage_id"]
@@ -1090,10 +1209,41 @@ def run_extraction_bench(
             field_batches = [fields]
         doc_results = []
         failed_docs = []
+        metadata_missing_docs = []
 
         for doc_path in selected_docs:
             doc_name = Path(doc_path).name
             output_file = stage_dir / f"{safe_name(Path(doc_path).stem)}.json"
+            metadata_record = metadata_for_document(paper_metadata_by_document, doc_path)
+            if stage_id == "paper_info":
+                payload = build_paper_metadata_payload(metadata_record or {}, fields, doc_name)
+                if not metadata_record:
+                    payload.setdefault("quality_notes", []).append(
+                        "No upstream metadata record matched this document; paper_info was not extracted from PDF text."
+                    )
+                payload = sanitize_payload(payload, normalize_unicode=False)
+                checks = validate_stage_payload(payload, normalize_unicode=False)
+                output_file.write_text(json_dumps(payload), encoding="utf-8")
+                if metadata_record:
+                    metadata_prefilled_documents.add(doc_name)
+                else:
+                    metadata_missing_docs.append(doc_name)
+                doc_results.append(
+                    {
+                        "document": doc_name,
+                        "status": (
+                            "passed"
+                            if metadata_record and checks["has_json"]
+                            else "metadata_missing"
+                            if checks["has_json"]
+                            else "invalid_json"
+                        ),
+                        "checks": checks,
+                        "output_file": str(output_file),
+                        "metadata_prefilled": bool(metadata_record),
+                    }
+                )
+                continue
             if output_file.exists():
                 try:
                     payload = json.loads(output_file.read_text(encoding="utf-8"))
@@ -1187,6 +1337,8 @@ def run_extraction_bench(
         stage_status = "passed"
         if invalid_count:
             stage_status = "invalid_json"
+        elif stage_id == "paper_info" and metadata_missing_docs:
+            stage_status = "metadata_missing"
         else:
             stage_status = yield_assessment["status"]
 
@@ -1219,6 +1371,7 @@ def run_extraction_bench(
                 "null_like_total": null_like_total,
                 "unicode_candidate_total": unicode_candidate_total,
                 "failed_docs": failed_docs,
+                "metadata_missing_docs": metadata_missing_docs,
             },
         }
         section_results.append(section_result)
@@ -1237,5 +1390,9 @@ def run_extraction_bench(
         "reason": "Live section-wise extraction bench completed.",
         "run_dir": str(run_dir),
         "documents": selected_docs,
+        "paper_metadata_handoff": {
+            "available_records": len(paper_metadata_by_document),
+            "prefilled_documents": sorted(metadata_prefilled_documents),
+        },
         "section_results": section_results,
     }

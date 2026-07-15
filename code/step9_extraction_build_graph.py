@@ -38,6 +38,8 @@ class Step9State(TypedDict, total=False):
     next_node: str
     output: str
     human_advice_available_before_design: bool
+    paper_metadata_by_document: dict[str, dict[str, Any]]
+    paper_metadata_report: dict[str, Any]
 
 
 SECTION_ORDER = [
@@ -58,6 +60,28 @@ THEORY_SECTION_ALIASES = {
     "mechanism_theory",
     "material_info.section5",
     "material_info.theory_mechanism",
+}
+
+
+PAPER_METADATA_FIELD_SPECS = [
+    ("paper_info.metadata.title", "string", True),
+    ("paper_info.metadata.authors", "array of strings", False),
+    ("paper_info.metadata.doi", "string", False),
+    ("paper_info.metadata.arxiv_id", "string", False),
+    ("paper_info.metadata.abstract", "string", False),
+    ("paper_info.metadata.publication_date", "string", False),
+    ("paper_info.metadata.journal", "string", False),
+    ("paper_info.metadata.url", "string", False),
+    ("paper_info.metadata.pdf_url", "string", False),
+    ("paper_info.metadata.keywords", "array of strings", False),
+    ("paper_info.metadata.source", "string", False),
+    ("paper_info.metadata.retrieved_at", "string", False),
+]
+
+PAPER_METADATA_FIELD_ALIASES = {
+    "publication_date": {"publication_date", "published_date", "date"},
+    "url": {"url", "paper_url", "landing_url"},
+    "keywords": {"keywords", "subjects"},
 }
 
 
@@ -152,6 +176,121 @@ def load_json_if_exists(path):
     if not json_path.exists():
         return {}
     return json.loads(json_path.read_text(encoding="utf-8-sig"))
+
+
+def _metadata_records(payload):
+    if isinstance(payload, list):
+        records = []
+        for item in payload:
+            records.extend(_metadata_records(item))
+        return records
+    if not isinstance(payload, dict):
+        return []
+    identity_keys = {"paper_id", "arxiv_id", "source_id", "title", "doi"}
+    if identity_keys.intersection(payload):
+        return [payload]
+    records = []
+    for key in ("papers", "records", "items", "results"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            for item in value.values():
+                records.extend(_metadata_records(item))
+        elif isinstance(value, list):
+            records.extend(_metadata_records(value))
+    return records
+
+
+def _identity_token(value):
+    return "".join(character for character in str(value or "").casefold() if character.isalnum())
+
+
+def _record_identity_tokens(record):
+    external_ids = record.get("external_ids") if isinstance(record.get("external_ids"), dict) else {}
+    raw_values = [
+        record.get("paper_id"),
+        record.get("arxiv_id"),
+        record.get("source_id"),
+        external_ids.get("arxiv"),
+        Path(str(record.get("file_path") or "")).stem,
+    ]
+    source = str(record.get("source") or "").strip()
+    source_id = str(record.get("source_id") or "").strip()
+    if source and source_id:
+        raw_values.append(f"{source}:{source_id}")
+    return {token for token in (_identity_token(value) for value in raw_values) if token}
+
+
+def _document_identity_tokens(document):
+    stem = Path(document).stem
+    tokens = {_identity_token(stem)}
+    if "__" in stem:
+        tokens.add(_identity_token(stem.replace("__", ":", 1)))
+    return {token for token in tokens if token}
+
+
+def discover_paper_metadata_paths(documents, configured_paths=None):
+    paths = []
+    seen = set()
+
+    def add(candidate):
+        candidate = Path(candidate)
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if candidate.exists() and key not in seen:
+            seen.add(key)
+            paths.append(candidate)
+
+    for configured in configured_paths or []:
+        add(configured)
+    for document in documents or []:
+        document_path = Path(document)
+        ancestors = [document_path.parent, *list(document_path.parents)[:4]]
+        for ancestor in ancestors:
+            add(ancestor / "paper_archive" / "metadata")
+            if ancestor.name.casefold() in {"paper_archive", "archive"}:
+                add(ancestor / "metadata")
+    return paths
+
+
+def load_paper_metadata_for_documents(documents, configured_paths=None):
+    sources = discover_paper_metadata_paths(documents, configured_paths)
+    records = []
+    invalid_files = []
+    for source in sources:
+        files = [source] if source.is_file() else sorted(source.rglob("*.json"))
+        for metadata_file in files:
+            try:
+                payload = json.loads(metadata_file.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError) as exc:
+                invalid_files.append({"path": str(metadata_file), "error": str(exc)})
+                continue
+            for record in _metadata_records(payload):
+                enriched = deepcopy(record)
+                enriched["_metadata_source_path"] = str(metadata_file)
+                records.append(enriched)
+
+    matches = {}
+    unmatched_documents = []
+    for document in documents or []:
+        document_tokens = _document_identity_tokens(document)
+        ranked = []
+        for record in records:
+            overlap = document_tokens.intersection(_record_identity_tokens(record))
+            if overlap:
+                ranked.append((len(overlap), record))
+        if ranked:
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            matches[str(Path(document))] = ranked[0][1]
+        else:
+            unmatched_documents.append(str(Path(document)))
+    report = {
+        "configured_paths": [str(path) for path in configured_paths or []],
+        "discovered_paths": [str(path) for path in sources],
+        "records_loaded": len(records),
+        "matched_documents": len(matches),
+        "unmatched_documents": unmatched_documents,
+        "invalid_files": invalid_files,
+    }
+    return matches, report
 
 
 def load_human_advice(args):
@@ -297,7 +436,32 @@ def append_repair_history(state, item):
 def field_registry_from_step8(step8_output):
     result = step8_output.get("result") or step8_output
     schema = result.get("schema_definition") or {}
-    return [field for field in schema.get("field_registry", []) or [] if isinstance(field, dict)]
+    fields = [deepcopy(field) for field in schema.get("field_registry", []) or [] if isinstance(field, dict)]
+    existing_metadata_names = set()
+    for field in fields:
+        path = str(field.get("field_path") or "").casefold()
+        if not path.startswith("paper_info."):
+            continue
+        leaf = path.rsplit(".", 1)[-1]
+        existing_metadata_names.add(leaf)
+    for field_path, data_type, required in PAPER_METADATA_FIELD_SPECS:
+        leaf = field_path.rsplit(".", 1)[-1]
+        aliases = PAPER_METADATA_FIELD_ALIASES.get(leaf, {leaf})
+        if existing_metadata_names.intersection(aliases):
+            continue
+        fields.append(
+            {
+                "field_path": field_path,
+                "section_id": "paper_info",
+                "field_name": leaf,
+                "data_type": data_type,
+                "required": required,
+                "source_basis": ["upstream_metadata"],
+                "concept_ids": [f"paper_metadata_{leaf}"],
+                "reason": "Canonical bibliographic field populated from retrieval/download metadata.",
+            }
+        )
+    return fields
 
 
 def normalize_section_id(section_id, field_path=""):
@@ -539,6 +703,10 @@ def load_inputs_node(state):
     step8_output = load_json_if_exists(args.step8_output)
     prompt_output = load_json_if_exists(args.prompt_output)
     human_advice = load_human_advice(args)
+    paper_metadata_by_document, paper_metadata_report = load_paper_metadata_for_documents(
+        args.test_documents,
+        getattr(args, "paper_metadata", []) or [],
+    )
     errors = []
     if not step8_output and not prompt_output:
         errors.append("Either --step8-output or --prompt-output must point to an existing JSON file.")
@@ -547,6 +715,8 @@ def load_inputs_node(state):
         "prompt_output": prompt_output,
         "human_advice": human_advice,
         "human_advice_available_before_design": bool(human_advice),
+        "paper_metadata_by_document": paper_metadata_by_document,
+        "paper_metadata_report": paper_metadata_report,
         "validation_errors": errors,
         "retry_counts": {},
         "repair_history": [],
@@ -788,6 +958,7 @@ def extraction_test_run_node(state):
             max_documents=args.max_test_documents,
             max_document_chars=args.max_document_chars,
             max_fields_per_stage=args.max_fields_per_stage,
+            paper_metadata_by_document=state.get("paper_metadata_by_document") or {},
         )
         return write_state_snapshot(
             merge_update(state, {"extraction_test": extraction_test, "status": "running"}),
@@ -826,6 +997,20 @@ def diagnose_section_result(section_result, unicode_normalized=False):
     summary = section_result.get("summary") or {}
     doc_results = section_result.get("document_results", []) or []
     diagnoses = []
+
+    if status == "metadata_missing":
+        diagnoses.append(
+            {
+                "type": "metadata_handoff_missing",
+                "severity": "blocking",
+                "stage_id": stage_id,
+                "documents": summary.get("metadata_missing_docs", []),
+                "evidence": ["No retrieval/download metadata record matched one or more test documents."],
+                "likely_cause": "The download manifest or paper archive metadata was not handed off, or document and paper identifiers do not match.",
+                "recommended_repair": "Provide --paper-metadata or preserve paper_id/arXiv/DOI identifiers when converting PDF to Markdown.",
+                "route_hint": "workflow_repair",
+            }
+        )
 
     invalid_docs = [
         item for item in doc_results if isinstance(item, dict) and item.get("status") == "invalid_json"
@@ -973,7 +1158,8 @@ def extraction_eval_node(state):
     failed_sections = [
         item
         for item in section_results
-        if isinstance(item, dict) and item.get("status") in {"failed", "needs_repair", "invalid_json", "low_quality"}
+        if isinstance(item, dict)
+        and item.get("status") in {"failed", "needs_repair", "invalid_json", "low_quality", "metadata_missing"}
     ]
     missing_dependency_sections = [
         item
@@ -1391,8 +1577,10 @@ def write_output_node(state):
             "step8_output": args.step8_output,
             "prompt_output": args.prompt_output,
             "test_documents": args.test_documents,
+            "paper_metadata": args.paper_metadata,
             "dry_run": args.dry_run,
         },
+        "paper_metadata_report": state.get("paper_metadata_report", {}),
         "workflow_plan": state.get("workflow_plan"),
         "prompt_output": state.get("prompt_output"),
         "judgement": state.get("judgement"),
@@ -1463,6 +1651,12 @@ def build_parser():
         help="Optional existing extraction pipeline used as a workflow/prompt/code strategy reference.",
     )
     parser.add_argument("--test-documents", nargs="*", default=[])
+    parser.add_argument(
+        "--paper-metadata",
+        nargs="*",
+        default=[],
+        help="Optional metadata JSON files/directories. When omitted, Step9 auto-discovers paper_archive/metadata near test documents.",
+    )
     parser.add_argument("--extraction-results", default="", help="Optional JSON file with live section-wise extraction test results.")
     parser.add_argument("--dry-run", action="store_true", help="Plan section-wise extraction tests without executing a live runner.")
     parser.add_argument("--skip-code-generation", action="store_true", help="Skip LLM code generation and only build/evaluate the workflow plan.")
