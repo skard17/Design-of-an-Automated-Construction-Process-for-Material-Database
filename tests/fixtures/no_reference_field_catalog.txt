@@ -1,0 +1,2 @@
+No reference field catalog is supplied for this blind benchmark.
+Derive the schema from the task objective, literature, and blinded expert advice.

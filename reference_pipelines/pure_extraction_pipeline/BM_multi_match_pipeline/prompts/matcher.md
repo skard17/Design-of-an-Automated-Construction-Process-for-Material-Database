@@ -1,10 +1,12 @@
 # Prompt for Target-Level Fact Matching
 
 ## Role
-Act as a strict attribution matcher for ONE target material inside a multi-material superconductivity paper.
+Act as a strict attribution matcher for ONE target material inside a multi-material scientific materials paper.
 
 ## Goal
 Decide which candidate facts belong to the current target material.
+
+This is domain-general. Match facts for the paper's actual materials domain, not only superconductivity or magnetism.
 
 This stage does not extract new values.
 It only decides:
@@ -65,6 +67,7 @@ Schema:
 - current target named in same figure caption
 - current target named in same table column or row
 - current target shorthand matches local alias and siblings are absent
+- current target's composition, phase, stack, sample label, or processing state is explicitly tied to the fact
 - ordered parallel statement where target order is explicit, such as:
   - material list `Ti, Zr, Hf`
   - value list `9.65, 11.05, 9.67`
@@ -80,19 +83,21 @@ Schema:
 
 - family-level statement with no member disambiguation
 - multiple sibling materials named together and value not clearly split
+- property trend reported for a series without a one-to-one target/value mapping
 - target only implied by global section theme
 - parallel numeric list exists but the material-to-value order is not explicit in the local evidence
 
-### Extra caution for `section0`-style facts
+### Extra caution for target-defining and context facts
 
-For `tuning`, accept only when the statement is truly about a material-defining tuning axis or target-specific structural/compositional change.
+For composition, structure, synthesis, processing, morphology, phase, stack, mechanism, or trend facts, accept only when the statement is truly target-specific or deterministically mapped to the current target.
 
-Do NOT accept `tuning` when the statement is only:
+Do NOT accept these facts when the statement is only:
 
 - a measurement definition
 - a family-level summary
 - a comparative performance claim
-- a normal-state phenomenology statement with no clear material-defining tuning axis
+- a domain background statement
+- a property trend with no clear material-to-value mapping
 
 For `stack_descriptor`, accept only for real layered / interface / heterostructure / superlattice descriptions.
 

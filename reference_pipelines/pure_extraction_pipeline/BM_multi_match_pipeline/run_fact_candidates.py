@@ -67,7 +67,7 @@ def is_bad_candidate(candidate: dict) -> tuple[bool, str | None]:
             "chain spacing",
             "spacing between quasi-one-dimensional chains",
             "spacing between",
-            "normalized superconducting gap",
+            "normalized gap",
             "uemura",
             "outside unconventional region",
             "unconventional range",
@@ -209,6 +209,7 @@ def run_fact_candidates(paper_id: str, max_new_chunks: int | None = None) -> Non
             logger.info("reuse existing chunk file %s", chunk_path.name)
             chunk_data = load_json(str(chunk_path))
             chunk_data = cleanup_chunk_data(chunk_data)
+            chunk_path.parent.mkdir(parents=True, exist_ok=True)
             chunk_path.write_text(json.dumps(chunk_data, ensure_ascii=False, indent=2), encoding="utf-8")
             if chunk_data.get("paper_level_candidates"):
                 max_id = max(
@@ -241,12 +242,13 @@ def run_fact_candidates(paper_id: str, max_new_chunks: int | None = None) -> Non
             api_key=api_key,
             temperature=float(stage_cfg.get("temperature", 0.0)),
             timeout_sec=int(provider.get("timeout_sec", 60)),
-            system_prompt="You are an expert in superconducting materials information extraction.",
+            system_prompt="You are an expert in materials science information extraction and database construction.",
         )
         out_text = clean_llm_output(response)
         chunk_data = parse_llm_json(out_text)
         chunk_data = cleanup_chunk_data(chunk_data)
         chunk_data, next_index = renumber_candidates(chunk_data, next_index)
+        chunk_path.parent.mkdir(parents=True, exist_ok=True)
         chunk_path.write_text(json.dumps(chunk_data, ensure_ascii=False, indent=2), encoding="utf-8")
         new_chunk_count += 1
         merged["paper_level_candidates"].extend(chunk_data.get("paper_level_candidates", []))

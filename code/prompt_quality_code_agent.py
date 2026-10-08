@@ -1,7 +1,9 @@
 import argparse
 import json
 import os
+import random
 import re
+import threading
 import textwrap
 import time
 import urllib.error
@@ -11,6 +13,11 @@ from pathlib import Path
 
 DEFAULT_BASE_URL = "https://chat.iphy.ac.cn/litellm/v1"
 DEFAULT_MODEL = os.getenv("CODE_AGENT_MODEL", "kimi-k2.6")
+DEFAULT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("CODE_AGENT_REQUEST_TIMEOUT_SECONDS", "600"))
+DEFAULT_REQUEST_TOTAL_TIMEOUT_SECONDS = float(
+    os.getenv("CODE_AGENT_REQUEST_TOTAL_TIMEOUT_SECONDS", "3600")
+)
+DEFAULT_REQUEST_RETRIES = max(1, int(os.getenv("CODE_AGENT_HTTP_RETRIES", "3")))
 DEFAULT_SYSTEM_PROMPT = (
     "You are a senior Python coding agent for scientific extraction workflows. "
     "Return valid JSON only."
@@ -187,6 +194,48 @@ def run_format_checks(prompt_output):
             "Every schema field should be covered by a section or figure extraction prompt.",
             uncovered[:100],
             "Generate coverage tests and fail extraction startup on uncovered fields.",
+        )
+    )
+
+    section_prompts = (
+        (modules.get("section_extraction_prompt_module") or {})
+        .get("section_extraction_prompts", {})
+    )
+    field_specs = [
+        spec
+        for prompt in section_prompts.values()
+        if isinstance(prompt, dict)
+        for spec in ((prompt.get("output_contract") or {}).get("field_specs") or [])
+        if isinstance(spec, dict) and spec.get("field_path")
+    ]
+    spec_paths = {spec["field_path"] for spec in field_specs}
+    missing_specs = sorted(context_paths - spec_paths)
+    checks.append(
+        make_check(
+            "all_fields_have_extraction_specs",
+            "format",
+            "high",
+            not missing_specs,
+            "Every schema field should carry its extraction semantics into the stage output contract.",
+            missing_specs[:100],
+            "Copy complete Step8 field definitions into output_contract.field_specs before extraction.",
+        )
+    )
+    weak_specs = sorted(
+        spec["field_path"]
+        for spec in field_specs
+        if not str(spec.get("description") or "").strip()
+        or not str(spec.get("extraction_notes") or "").strip()
+    )
+    checks.append(
+        make_check(
+            "field_specs_have_semantic_guidance",
+            "quality",
+            "medium",
+            not weak_specs,
+            "Every field spec needs both a scientific definition and operational extraction notes; a design reason cannot substitute for either.",
+            weak_specs[:100],
+            "Require Step8 schema fields to include precise descriptions and preserve them in Step9.",
         )
     )
 
@@ -403,7 +452,7 @@ def build_quality_review_prompt(prompt_output, judgement):
         improvement advice that will guide the next code-generation agent.
 
         Prompt package excerpt:
-        {json_dumps(excerpt, max_chars=26000)}
+        {json_dumps(excerpt, max_chars=200000)}
 
         Return JSON only with this schema:
         {{
@@ -487,7 +536,57 @@ def merge_quality_review(judgement, review):
     return merged
 
 
-def litellm_chat(base_url, api_key, model, prompt, temperature=0, max_tokens=4096):
+def _request_http_response_with_deadline(request, socket_timeout, timeout_seconds):
+    completed = threading.Event()
+    cancelled = threading.Event()
+    outcome = {}
+    response_holder = {}
+
+    def close_response(response):
+        try:
+            response.close()
+        except Exception:
+            pass
+
+    def request_response():
+        response = None
+        try:
+            response = urllib.request.urlopen(request, timeout=socket_timeout)
+            response_holder["response"] = response
+            if cancelled.is_set():
+                return
+            outcome["body"] = response.read()
+        except BaseException as exc:
+            outcome["error"] = exc
+        finally:
+            if response is not None:
+                threading.Thread(
+                    target=close_response,
+                    args=(response,),
+                    daemon=True,
+                ).start()
+            completed.set()
+
+    worker = threading.Thread(target=request_response, daemon=True)
+    worker.start()
+    if not completed.wait(timeout_seconds):
+        cancelled.set()
+        response = response_holder.get("response")
+        if response is not None:
+            threading.Thread(
+                target=close_response,
+                args=(response,),
+                daemon=True,
+            ).start()
+        raise TimeoutError(
+            f"LiteLLM request exceeded the {timeout_seconds:g}s total wall-clock limit"
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["body"]
+
+
+def litellm_chat(base_url, api_key, model, prompt, temperature=0, max_tokens=384000):
     if not api_key:
         raise RuntimeError("Missing API key. Use --api-key or set CODE_AGENT_API_KEY.")
     resolved_model = MODEL_ALIASES.get(model, model)
@@ -501,7 +600,10 @@ def litellm_chat(base_url, api_key, model, prompt, temperature=0, max_tokens=409
         "response_format": {"type": "json_object"},
         "max_tokens": max_tokens,
     }
-    for attempt in range(3):
+    reasoning_effort = os.getenv("CODE_AGENT_REASONING_EFFORT", "").strip().casefold()
+    if reasoning_effort in {"low", "medium", "high"}:
+        payload["reasoning_effort"] = reasoning_effort
+    for attempt in range(DEFAULT_REQUEST_RETRIES):
         request = urllib.request.Request(
             f"{base_url.rstrip('/')}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -509,21 +611,56 @@ def litellm_chat(base_url, api_key, model, prompt, temperature=0, max_tokens=409
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=300) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            raw_response = _request_http_response_with_deadline(
+                request,
+                DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                DEFAULT_REQUEST_TOTAL_TIMEOUT_SECONDS,
+            )
+            data = json.loads(raw_response.decode("utf-8"))
             content = data["choices"][0]["message"].get("content") or ""
             if content.strip():
                 return content
-            if attempt < 2:
+            if attempt < DEFAULT_REQUEST_RETRIES - 1:
                 time.sleep(5 * (attempt + 1))
                 continue
-            raise RuntimeError("LiteLLM returned empty message content after retries.")
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            usage = data.get("usage") or {}
+            completion_details = usage.get("completion_tokens_details") or {}
+            diagnostic = {
+                "finish_reason": choice.get("finish_reason"),
+                "content_type": type(message.get("content")).__name__,
+                "reasoning_chars": len(message.get("reasoning_content") or ""),
+                "completion_tokens": usage.get("completion_tokens"),
+                "reasoning_tokens": completion_details.get("reasoning_tokens"),
+            }
+            raise RuntimeError(
+                "LiteLLM returned empty message content after retries; "
+                f"diagnostic={json.dumps(diagnostic, sort_keys=True)}"
+            )
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            if exc.code in {502, 503, 504} and attempt < 2:
-                time.sleep(5 * (attempt + 1))
+            if exc.code in {429, 500, 502, 503, 504} and attempt < DEFAULT_REQUEST_RETRIES - 1:
+                retry_after = 0.0
+                try:
+                    retry_after = float((exc.headers or {}).get("Retry-After", 0) or 0)
+                except (TypeError, ValueError):
+                    retry_after = 0.0
+                base_delay = (
+                    min(120.0, 15.0 * (2**attempt))
+                    if exc.code == 429
+                    else min(60.0, 5.0 * (attempt + 1))
+                )
+                delay = min(300.0, max(retry_after, base_delay))
+                time.sleep(delay + random.uniform(0.0, min(5.0, delay * 0.2)))
                 continue
             raise RuntimeError(f"LiteLLM HTTP error {exc.code}: {body}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt < DEFAULT_REQUEST_RETRIES - 1:
+                delay = min(60.0, 5.0 * (attempt + 1))
+                time.sleep(delay + random.uniform(0.0, min(5.0, delay * 0.2)))
+                continue
+            raise RuntimeError(f"LiteLLM transport error after retries: {exc}") from exc
 
 
 def build_code_agent_prompt(prompt_output, judgement, target_files):
@@ -532,7 +669,7 @@ def build_code_agent_prompt(prompt_output, judgement, target_files):
         Build the next-step code generation sub-agent plan for this repository.
 
         The system already produced a Step 9 prompt package. A local judgement pass found:
-        {json_dumps(judgement, max_chars=12000)}
+        {json_dumps(judgement, max_chars=100000)}
 
         Relevant prompt package excerpt:
         {json_dumps({
@@ -540,7 +677,7 @@ def build_code_agent_prompt(prompt_output, judgement, target_files):
             "validation_errors": prompt_output.get("validation_errors"),
             "result": prompt_output.get("result"),
             "module_output_keys": list((prompt_output.get("module_outputs") or {}).keys()),
-        }, max_chars=10000)}
+        }, max_chars=100000)}
 
         Target files that may be changed by a human/Codex after reviewing your plan:
         {json_dumps(target_files)}
@@ -573,17 +710,52 @@ def build_code_agent_prompt(prompt_output, judgement, target_files):
         - Generated code must read prompt packages and judgement files from paths.
         - If judgement.status is needs_code_action, generated code should include preflight validation.
         - Keep any generated file self-contained unless it can import existing code safely.
+        - Preserve dependency order between extraction stages, but process independent documents within the same stage concurrently.
+        - Use bounded, configurable concurrency with a conservative provider-aware default; never create unbounded API fan-out.
+        - Keep one independent output namespace per document/attempt and aggregate results deterministically in source-document order.
+        - Persist configured and effective worker counts in the run protocol and final artifact for reproducibility.
+        - Apply retry/backoff independently per API task so one transient failure does not serialize or discard unrelated documents.
+        - Live mode must call the configured model API through the repository transport; do not emit dummy, mock, or placeholder extraction implementations.
         """
     ).strip()
 
 
 def parse_llm_json(raw_text):
+    candidates = [raw_text]
+    match = re.search(r"\{.*\}", raw_text, flags=re.S)
+    if match and match.group(0) != raw_text:
+        candidates.append(match.group(0))
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+
+        # Preserve paired backslashes and quote only an odd trailing backslash
+        # before a non-JSON escape, as commonly emitted in LaTeX commands.
+        def repair_backslash_run(match):
+            run = match.group(0)
+            if len(run) % 2 == 0:
+                return run
+            next_char = candidate[match.end() : match.end() + 1]
+            if next_char in {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}:
+                return run
+            return run + "\\"
+
+        repaired = re.sub(r"\\+", repair_backslash_run, candidate)
+        if repaired != candidate:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+
+    if last_error:
+        raise last_error
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw_text, flags=re.S)
-        if match:
-            return json.loads(match.group(0))
         raise
 
 
@@ -704,8 +876,8 @@ def build_parser():
     parser.add_argument("--api-key", default=os.getenv("CODE_AGENT_API_KEY"))
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--temperature", type=float, default=0)
-    parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--quality-review-max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=384000)
+    parser.add_argument("--quality-review-max-tokens", type=int, default=384000)
     parser.add_argument("--target-files", nargs="*", default=[])
     parser.add_argument("--judge-only", action="store_true")
     parser.add_argument(

@@ -1,7 +1,7 @@
 # Prompt for Paper-Level Fact Candidate Extraction
 
 ## Role
-Act as a strict fact candidate extractor for multi-material superconductivity papers.
+Act as a strict fact candidate extractor for multi-material scientific materials papers.
 
 ## Goal
 Extract paper-level candidate facts first, without forcing final ownership too early.
@@ -26,6 +26,8 @@ It is acceptable for a fact to remain:
 
 That is better than contaminating a target.
 
+This is a domain-general materials-database task. Extract facts for the material domain actually described by the paper. Superconducting, magnetic, electrochemical, catalytic, thermoelectric, mechanical, optical, electronic, structural, synthesis, and characterization facts are all eligible when they are explicitly supported.
+
 ## Output format
 
 Return JSON only.
@@ -37,7 +39,9 @@ Schema:
   "paper_level_candidates": [
     {
       "candidate_id": "string",
-      "fact_type": "Tc | Jc | Hc1 | Hc2 | Hc | P_sc | P_nsc | lambda | xi | electronic_state_tuning_mechanism | carrier_concentration | secondary_phases | stack_descriptor",
+      "fact_type": "material_identity | composition | structure | phase | synthesis_method | processing_condition | property_value | transition_temperature | critical_field | critical_current_density | carrier_concentration | defect_or_doping | secondary_phases | stack_descriptor | morphology | measurement_condition | characterization_result | computational_result | performance_metric | mechanism_or_interpretation | relation_or_trend | other_supported_fact",
+      "property_name": "string or null",
+      "property_category": "string or null",
       "value": "string or object",
       "unit": "string or null",
       "verbatim_evidence": "short verbatim quote",
@@ -56,6 +60,14 @@ Schema:
         "temperature": "string or null",
         "magnetic_field": "string or null",
         "pressure": "string or null",
+        "composition": "string or null",
+        "sample_form": "string or null",
+        "atmosphere": "string or null",
+        "time": "string or null",
+        "frequency": "string or null",
+        "voltage": "string or null",
+        "current": "string or null",
+        "measurement_method": "string or null",
         "direction": "string or null",
         "characteristics": "string or null"
       },
@@ -71,52 +83,31 @@ Schema:
 
 Focus on:
 
-- `section0`-relevant facts
-  - electronic_state_tuning_mechanism
-  - carrier concentration
-  - secondary phases
-  - stack descriptor
-- `section1`-relevant facts
-  - `Tc`
-  - `Jc`
-  - `Hc1`
-  - `Hc2`
-  - `Hc`
-  - `P_sc`
-  - `P_nsc`
-  - `lambda`
-  - `xi`
+- target-defining material information:
+  - composition, formula, doping level, phase, crystal structure, morphology, sample form, stack/composite/device architecture
+- synthesis and processing information:
+  - preparation method, precursor, temperature, atmosphere, time, pressure, annealing, growth, deposition, calcination, sintering, post-treatment
+- measured or computed material properties:
+  - use `fact_type = "property_value"` for most scalar or categorical properties
+  - set `property_name` to the paper's specific property name, e.g. `Tc`, `Curie_temperature`, `Neel_temperature`, `magnetization`, `coercivity`, `band_gap`, `ionic_conductivity`, `capacity`, `overpotential`, `Seebeck_coefficient`, `thermal_conductivity`, `hardness`
+  - set `property_category` when useful, e.g. `superconducting`, `magnetic`, `electrochemical`, `catalytic`, `thermoelectric`, `mechanical`, `optical`, `electronic`, `structural`
+- characterization and interpretation facts:
+  - phase identification, structure refinement, spectroscopy/microscopy findings, computational results, trends, proposed mechanisms
 
 ### 1.1 Strict type boundaries
 
-Only emit a candidate if it truly belongs to one of the supported fact types.
+Only emit a candidate if it is explicitly supported and has enough local context to be useful for a database.
 
-Forbidden misclassifications:
+Boundary rules:
 
-- normal-state resistivity is NOT `P_nsc`
-- magnetoresistance is NOT `P_nsc`
-- heat-capacity jump ratio is NOT `P_sc`
-- RRR is NOT `P_sc` or `P_nsc`
-- Sommerfeld coefficient is NOT `lambda` or `xi`
-- dHc2/dT slope is allowed only as `Hc2` when explicitly tied to upper critical field analysis
+- Do not force a fact into a domain-specific label just because the old schema had that label. Use `property_value` plus `property_name` for new domains.
+- Do not treat measurement settings as material properties unless the paper reports the setting as the studied variable or processing condition.
+- Do not treat background comparison materials as target-specific facts unless the manifest marks them as targets.
+- Do not treat family-level trends as target-specific values. Extract them as `relation_or_trend` with `attribution_hint.reason = "family_level"` when useful.
+- Do not invent units, values, compositions, or target names.
+- If the paper uses a domain-specific symbol, keep it as written in `property_name` and preserve the evidence quote.
 
-Interpretation rules:
-
-- `P_sc` means pressure values or pressure ranges where superconductivity exists
-- `P_nsc` means pressure values or pressure ranges where superconductivity is absent or suppressed
-- If the paper does not discuss pressure-driven appearance/disappearance of superconductivity, omit `P_sc` and `P_nsc`
-- `Tc` is superconducting transition temperature only
-- `Hc1/Hc2/Hc` must be magnetic critical fields only
-- `Jc` must be critical current density only
-- `lambda` and `xi` must be penetration depth or coherence length only
-
-Additional exclusion rules for `section0`:
-
-- Do NOT use `electronic_state_tuning_mechanism` for measurement settings such as field angle, field orientation, or criterion definitions
-- Do NOT use `electronic_state_tuning_mechanism` for family-level comparison language such as ionic-size trends, chain-spacing commentary, or Uemura-classification discussion
-- Do NOT use `electronic_state_tuning_mechanism` for superconducting gap ratios, `Tc/TF`, or other derived classification metrics
-- Do NOT use `carrier_concentration` unless a numeric carrier density or concentration-like value is explicitly given
-- Do NOT use `stack_descriptor` for generic crystal-structure labels, `alpha-W` / `bcc` type labels, or qualitative dimensionality statements such as `quasi-1D electronic structure`
+Examples of allowed `property_name` values are illustrative only; they are not a closed vocabulary. The extraction should follow the paper and the downstream database purpose.
 
 ### 2. Local context only
 
@@ -151,6 +142,14 @@ If a statement is clearly family-level and not target-specific:
 
 If a value is scientifically important but does not fit the supported fact types, do not force it into a nearby type.
 Leave it out and mention it in `paper_level_unassigned_notes`.
+
+### 7. Example guidance
+
+The examples below illustrate attribution behavior, not a fixed domain:
+
+- Superconducting validation-style fact: `property_name = "Tc"`, `value = "6.1"`, `unit = "K"`, `property_category = "superconducting"`.
+- Magnetic validation-style fact: `property_name = "Curie_temperature"`, `value = "365"`, `unit = "K"`, `property_category = "magnetic"`.
+- General materials fact: `property_name = "band_gap"` or `property_name = "specific_capacity"` when those are the explicit values reported by the paper.
 
 ## Input
 

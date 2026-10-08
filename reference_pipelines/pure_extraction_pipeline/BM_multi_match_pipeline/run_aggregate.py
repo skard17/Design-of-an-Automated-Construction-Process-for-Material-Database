@@ -10,6 +10,23 @@ from utils.log_utils import setup_logger
 
 
 SECTION0_TYPE_MAP = {
+    "material_identity": "material_identity",
+    "composition": "composition",
+    "structure": "structure",
+    "phase": "phase",
+    "synthesis": "synthesis",
+    "synthesis_method": "synthesis",
+    "processing": "processing",
+    "processing_condition": "processing",
+    "defect_or_doping": "defect_or_doping",
+    "morphology": "morphology",
+    "measurement_condition": "measurement_conditions",
+    "characterization": "characterization",
+    "characterization_result": "characterization",
+    "computational_result": "computational_result",
+    "mechanism": "mechanism_or_interpretation",
+    "mechanism_or_interpretation": "mechanism_or_interpretation",
+    "relation_or_trend": "relation_or_trend",
     "tuning": "electronic_state_tuning_mechanism",
     "electronic_state_tuning_mechanism": "electronic_state_tuning_mechanism",
     "carrier_concentration": "carrier_concentration",
@@ -17,7 +34,29 @@ SECTION0_TYPE_MAP = {
     "secondary_phases": "secondary_phases",
     "stack_descriptor": "stack_descriptor",
 }
-SECTION1_TYPES = {"Tc", "Jc", "Hc1", "Hc2", "Hc", "P_sc", "P_nsc", "lambda", "xi"}
+LEGACY_PROPERTY_TYPES = {"Tc", "Jc", "Hc1", "Hc2", "Hc", "P_sc", "P_nsc", "lambda", "xi"}
+GENERIC_PROPERTY_TYPES = {
+    "property",
+    "property_value",
+    "performance_metric",
+    "transition_temperature",
+    "critical_field",
+    "critical_current_density",
+    "band_gap",
+    "Curie_temperature",
+    "Neel_temperature",
+    "magnetization",
+    "coercivity",
+    "resistivity",
+    "conductivity",
+    "ionic_conductivity",
+    "specific_capacity",
+    "overpotential",
+    "Seebeck_coefficient",
+    "thermal_conductivity",
+    "hardness",
+}
+PROPERTY_FACT_TYPES = LEGACY_PROPERTY_TYPES | GENERIC_PROPERTY_TYPES
 MOJIBAKE_MARKERS = ("è", "é", "å", "ç", "æ", "î", "â", "œ", "‰", "ˆ")
 SUBSCRIPT_MAP = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
 
@@ -116,6 +155,22 @@ def normalize_string(value: str | None) -> str | None:
     return text
 
 
+def normalize_field_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = maybe_repair_mojibake(str(value))
+    text = text.translate(SUBSCRIPT_MAP)
+    text = text.replace("\\_", "_")
+    text = text.replace("$", "")
+    text = text.strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", "_", text.strip())
+    text = re.sub(r"[^0-9A-Za-z_./()+\-]+", "_", text)
+    text = text.strip("_")
+    return text or None
+
+
 def normalize_conditions(conditions: dict) -> dict:
     return {key: normalize_string(value) for key, value in (conditions or {}).items()}
 
@@ -165,10 +220,23 @@ def dedupe_records(records: list[dict]) -> list[dict]:
 
 def build_fact_record(candidate: dict) -> dict:
     record = {
+        "fact_type": normalize_field_key(candidate.get("fact_type")),
         "value": normalize_string(candidate.get("value")),
         "unit": normalize_string(candidate.get("unit")),
         "conditions": normalize_conditions(candidate.get("conditions", {}) or {}),
     }
+    if candidate.get("property_name"):
+        record["property_name"] = normalize_field_key(candidate.get("property_name"))
+    for key in (
+        "property_category",
+        "method",
+        "measurement_method",
+        "sample_form",
+        "phase",
+        "relation",
+    ):
+        if candidate.get(key):
+            record[key] = normalize_string(candidate.get(key))
     if candidate.get("verbatim_evidence"):
         record["verbatim_evidence"] = normalize_string(candidate["verbatim_evidence"])
     if candidate.get("source_anchor"):
@@ -176,11 +244,34 @@ def build_fact_record(candidate: dict) -> dict:
             key: normalize_string(value)
             for key, value in candidate["source_anchor"].items()
         }
+    if candidate.get("local_material_mentions"):
+        mentions = [
+            normalize_string(value)
+            for value in candidate.get("local_material_mentions", [])
+            if normalize_string(value)
+        ]
+        if mentions:
+            record["local_material_mentions"] = mentions
     return record
 
 
 def normalize_section0_key(fact_type: str | None) -> str | None:
     return SECTION0_TYPE_MAP.get(str(fact_type or ""))
+
+
+def property_output_key(candidate: dict) -> str | None:
+    property_name = str(candidate.get("property_name") or "").strip()
+    if property_name:
+        return normalize_field_key(property_name)
+
+    fact_type = str(candidate.get("fact_type") or "").strip()
+    if fact_type in PROPERTY_FACT_TYPES:
+        return normalize_field_key(fact_type)
+
+    if fact_type and fact_type not in SECTION0_TYPE_MAP and candidate.get("value") is not None:
+        return normalize_field_key(fact_type)
+
+    return None
 
 
 def run_aggregate(paper_id: str, target_id: str) -> None:
@@ -218,10 +309,11 @@ def run_aggregate(paper_id: str, target_id: str) -> None:
         fact_type = candidate.get("fact_type")
         record = build_fact_record(candidate)
         normalized_section0_key = normalize_section0_key(fact_type)
+        property_key = property_output_key(candidate)
         if normalized_section0_key:
             section0.setdefault(normalized_section0_key, []).append(record)
-        elif fact_type in SECTION1_TYPES:
-            section1.setdefault(fact_type, []).append(record)
+        elif property_key:
+            section1.setdefault(property_key, []).append(record)
 
     for key, records in list(section0.items()):
         section0[key] = dedupe_records(records)
@@ -233,11 +325,13 @@ def run_aggregate(paper_id: str, target_id: str) -> None:
     ambiguity_flags: list[str] = []
     for item in matched.get("ambiguous_candidates", []):
         fact_type = str(item.get("fact_type") or "")
+        candidate = candidates_by_id.get(str(item.get("candidate_id") or ""), item)
         normalized_section0_key = normalize_section0_key(fact_type)
+        property_key = property_output_key(candidate)
         # Keep ambiguity notes when they are directly tied to emitted section1 facts,
         # or to section0 categories that we actually kept for this target. This trims
         # noisy family-level structural ambiguities that do not surface in the output.
-        if fact_type not in SECTION1_TYPES and normalized_section0_key not in active_section0_types:
+        if not property_key and normalized_section0_key not in active_section0_types:
             continue
         reason = normalize_string(item.get("reason"))
         if reason and reason not in ambiguity_flags:
@@ -245,9 +339,9 @@ def run_aggregate(paper_id: str, target_id: str) -> None:
 
     omission_reasons: list[str] = []
     if not section0:
-        omission_reasons.append("No accepted section0 facts for this target.")
+        omission_reasons.append("No accepted target context facts for this target.")
     if not section1:
-        omission_reasons.append("No accepted section1 facts for this target.")
+        omission_reasons.append("No accepted target-specific property facts for this target.")
 
     final = {
         "primary_signature": normalize_string(display_name),
@@ -271,7 +365,7 @@ def run_aggregate(paper_id: str, target_id: str) -> None:
                     "ambiguous_candidate_ids": ambiguous_ids,
                 },
                 "quality_control": {
-                    "has_target_specific_superconducting_evidence": bool(section1),
+                    "has_target_specific_property_evidence": bool(section1),
                     "ambiguity_flags": ambiguity_flags,
                     "omission_reasons": omission_reasons,
                 },

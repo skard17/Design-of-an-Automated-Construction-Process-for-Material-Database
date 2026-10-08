@@ -7,7 +7,9 @@
   "paper_level_candidates": [
     {
       "candidate_id": "string",
-      "fact_type": "Tc | Jc | Hc1 | Hc2 | Hc | P_sc | P_nsc | lambda | xi | electronic_state_tuning_mechanism | carrier_concentration | secondary_phases | stack_descriptor",
+      "fact_type": "material_identity | composition | structure | phase | synthesis_method | processing_condition | property_value | transition_temperature | critical_field | critical_current_density | carrier_concentration | defect_or_doping | secondary_phases | stack_descriptor | morphology | measurement_condition | characterization_result | computational_result | performance_metric | mechanism_or_interpretation | relation_or_trend | other_supported_fact",
+      "property_name": "string or null",
+      "property_category": "string or null",
       "value": "string or object",
       "unit": "string or null",
       "verbatim_evidence": "string",
@@ -26,6 +28,14 @@
         "temperature": "string or null",
         "magnetic_field": "string or null",
         "pressure": "string or null",
+        "composition": "string or null",
+        "sample_form": "string or null",
+        "atmosphere": "string or null",
+        "time": "string or null",
+        "frequency": "string or null",
+        "voltage": "string or null",
+        "current": "string or null",
+        "measurement_method": "string or null",
         "direction": "string or null",
         "characteristics": "string or null"
       },
@@ -40,4 +50,6 @@
 
 - This stage extracts candidate facts without final ownership.
 - `value` can be string or object depending on fact type.
+- `property_name` carries the domain-specific property label when `fact_type` is generic, such as `Tc`, `Curie_temperature`, `band_gap`, or `specific_capacity`.
+- `property_category` is optional and should describe the domain family only when the paper supports it.
 - `local_material_mentions` should come from the immediate local context only.

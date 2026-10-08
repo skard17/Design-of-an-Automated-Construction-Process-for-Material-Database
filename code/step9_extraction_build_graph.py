@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 from copy import deepcopy
@@ -10,10 +11,13 @@ from langgraph.graph import END, START, StateGraph
 
 import prompt_quality_code_agent as prompt_agent
 import downstream_extraction_runner
+import materials_agent_protocol as agent_protocol
+import run_artifact_guard
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REFERENCE_PIPELINE = str(PROJECT_ROOT / "reference_pipelines" / "pure_extraction_pipeline")
+MATERIAL_LITERATURE_TASK_CONTRACT = agent_protocol.materials_literature_task_contract()
 
 
 class Step9State(TypedDict, total=False):
@@ -24,11 +28,15 @@ class Step9State(TypedDict, total=False):
     judgement: dict[str, Any]
     quality_review: dict[str, Any]
     code_agent: dict[str, Any]
+    code_generation_attempt_count: int
     extraction_test: dict[str, Any]
+    extraction_attempt_count: int
     extraction_eval: dict[str, Any]
     supervisor_decision: dict[str, Any]
     validation_errors: list[str]
     human_advice: list[dict[str, Any]]
+    applied_human_advice: str
+    human_review_applied: bool
     retry_counts: dict[str, int]
     repair_history: list[dict[str, Any]]
     failed_node: str
@@ -40,6 +48,13 @@ class Step9State(TypedDict, total=False):
     human_advice_available_before_design: bool
     paper_metadata_by_document: dict[str, dict[str, Any]]
     paper_metadata_report: dict[str, Any]
+    human_expert_review: dict[str, Any]
+    feedback_classification: dict[str, Any]
+    impact_manifest: dict[str, Any]
+    impact_supervisor_decision: dict[str, Any]
+    impact_manifest_input: dict[str, Any]
+    protocol_messages: list[dict[str, Any]]
+    run_identity: dict[str, Any]
 
 
 SECTION_ORDER = [
@@ -62,6 +77,16 @@ THEORY_SECTION_ALIASES = {
     "material_info.theory_mechanism",
 }
 
+DYNAMIC_SECTION_RANK = {
+    "sample_info": 10,
+    "process_info": 20,
+    "measurement_info": 30,
+    "property_observation_info": 40,
+    "evidence_info": 50,
+    "claim_info": 60,
+    "interpretation_info": 70,
+}
+
 
 PAPER_METADATA_FIELD_SPECS = [
     ("paper_info.metadata.title", "string", True),
@@ -82,6 +107,21 @@ PAPER_METADATA_FIELD_ALIASES = {
     "publication_date": {"publication_date", "published_date", "date"},
     "url": {"url", "paper_url", "landing_url"},
     "keywords": {"keywords", "subjects"},
+}
+
+PAPER_METADATA_DESCRIPTIONS = {
+    "title": "Published or preprint title of this source document, not a material name.",
+    "authors": "Ordered author names credited on this source document.",
+    "doi": "Digital Object Identifier of this source document, excluding cited works.",
+    "arxiv_id": "arXiv identifier and version of this source preprint.",
+    "abstract": "Author-provided abstract of this document, not a generated summary.",
+    "publication_date": "Reported publication or preprint release date of this document.",
+    "journal": "Journal or publication venue associated with this document.",
+    "url": "Canonical landing-page URL for this source document.",
+    "pdf_url": "Download URL of the source document PDF, not a cited attachment.",
+    "keywords": "Source-provided keywords or subject classifications for this document.",
+    "source": "Retrieval provider or repository from which this document was obtained.",
+    "retrieved_at": "Timestamp of document retrieval, distinct from its publication date.",
 }
 
 
@@ -147,6 +187,17 @@ def json_dumps(value):
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
+def literature_task_contract(step8_output):
+    result = step8_output.get("result") if isinstance(step8_output, dict) else {}
+    candidate = result.get("task_contract") if isinstance(result, dict) else {}
+    contract = dict(MATERIAL_LITERATURE_TASK_CONTRACT)
+    if isinstance(candidate, dict):
+        for key in ("record_scope", "lineage_contract_version"):
+            if candidate.get(key):
+                contract[key] = candidate[key]
+    return contract
+
+
 def dict_to_namespace(values):
     return argparse.Namespace(**values)
 
@@ -165,8 +216,47 @@ def write_state_snapshot(state, current_node, next_node=None):
     snapshot_for_file = deepcopy(snapshot)
     if isinstance(snapshot_for_file.get("args"), dict) and snapshot_for_file["args"].get("api_key"):
         snapshot_for_file["args"]["api_key"] = "[REDACTED]"
-    state_path_from_args(args).write_text(json_dumps(snapshot_for_file), encoding="utf-8")
+    run_artifact_guard.atomic_write_json(
+        state_path_from_args(args),
+        snapshot_for_file,
+        run_identity=state.get("run_identity"),
+    )
     return snapshot
+
+
+def append_protocol_message(
+    state,
+    update,
+    *,
+    sender,
+    receiver="step9_supervisor",
+    phase,
+    status,
+    payload_refs=None,
+    decision=None,
+    requested_actions=None,
+    produced_artifacts=None,
+    next_route="",
+    evidence=None,
+):
+    messages = deepcopy(state.get("protocol_messages") or [])
+    messages.append(
+        agent_protocol.make_message(
+            sender=sender,
+            receiver=receiver,
+            phase=phase,
+            status=status,
+            task_contract=literature_task_contract(state.get("step8_output") or {}),
+            payload_refs=payload_refs,
+            decision=decision,
+            requested_actions=requested_actions,
+            produced_artifacts=produced_artifacts,
+            next_route=next_route,
+            evidence=evidence,
+        )
+    )
+    update["protocol_messages"] = messages
+    return update
 
 
 def load_json_if_exists(path):
@@ -317,6 +407,23 @@ def load_human_advice(args):
     return advice_items[: max(0, int(getattr(args, "max_human_advice_rounds", 2) or 2))]
 
 
+def inject_resume_human_advice(initial_state, human_advice):
+    advice_items = deepcopy(list(human_advice or []))
+    if not advice_items:
+        return initial_state
+
+    initial_state["human_advice"] = advice_items
+    human_review = initial_state.get("human_expert_review") or {}
+    resume_expert_review = (
+        initial_state.get("status") in {"waiting_for_human_advice", "needs_human_review"}
+        and human_review.get("status") in {"waiting_for_human_advice", "accepted"}
+    )
+    if resume_expert_review:
+        initial_state["status"] = "running"
+        initial_state["next_node"] = "human_expert_review"
+    return initial_state
+
+
 def advice_text(human_advice):
     chunks = []
     for item in human_advice or []:
@@ -381,6 +488,128 @@ def infer_human_advice_route(human_advice):
     if any(token in text for token in ("prompt", "提示", "json", "missing", "evidence", "证据")):
         return "prompt_repair"
     return ""
+
+
+def _feedback_values(human_advice, key):
+    values = []
+    for item in human_advice or []:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get(key)
+        if raw is None:
+            continue
+        candidates = raw if isinstance(raw, list) else [raw]
+        values.extend(str(value).strip() for value in candidates if str(value).strip())
+    return list(dict.fromkeys(values))
+
+
+def build_feedback_classification_and_impact(state):
+    """Classify expert/system feedback and produce a bounded literature reprocessing plan."""
+    human_advice = state.get("human_advice", []) or []
+    advice_route = infer_human_advice_route(human_advice)
+    explicit_types = [value.lower() for value in _feedback_values(human_advice, "feedback_type")]
+    advice = advice_text(human_advice).lower()
+    schema_feedback = state.get("schema_feedback") or {}
+    human_review = state.get("human_expert_review") or {}
+    diagnoses = (state.get("extraction_eval") or {}).get("failure_diagnoses", []) or []
+
+    if human_review.get("status") in {"accepted", "skipped"} and not schema_feedback and not diagnoses:
+        feedback_type = "none"
+        target_components = []
+        reason = "The expert gate accepted the internally passing result, so explanatory review text is not corrective feedback."
+    elif any(value in {"record_exception", "instance_error", "current_record"} for value in explicit_types) or any(
+        token in advice for token in ("current record only", "instance only", "只改当前", "当前记录", "个例")
+    ):
+        feedback_type = "record_exception"
+        target_components = ["record"]
+        reason = "Expert feedback identifies a literature-record-specific exception."
+    elif any(value in {"systematic_schema_or_rule", "schema_error", "rule_error"} for value in explicit_types) or schema_feedback or advice_route:
+        feedback_type = "systematic_schema_or_rule"
+        route_component = {
+            "schema_feedback_to_step8": "schema",
+            "prompt_repair": "prompt",
+            "workflow_repair": "workflow",
+        }.get(advice_route, "schema")
+        target_components = [route_component]
+        reason = "Feedback can affect the schema, extraction prompt/rule, validator, or workflow used by multiple literature records."
+    elif any(value in {"unresolved", "uncertain"} for value in explicit_types) or human_review.get("status") in {
+        "waiting_for_human_advice",
+        "needs_revision",
+    }:
+        feedback_type = "unresolved"
+        target_components = ["human_review"]
+        reason = "The available literature evidence or review decision is not sufficient for a reliable automatic repair."
+    else:
+        feedback_type = "none"
+        target_components = []
+        reason = "No corrective expert or system feedback requires historical reprocessing."
+
+    affected_documents = _feedback_values(human_advice, "documents")
+    affected_stage_ids = _feedback_values(human_advice, "stage_ids")
+    affected_field_paths = _feedback_values(human_advice, "field_paths")
+    for diagnosis in diagnoses:
+        if not isinstance(diagnosis, dict):
+            continue
+        stage_id = str(diagnosis.get("stage_id") or "").strip()
+        if stage_id:
+            affected_stage_ids.append(stage_id)
+        for document in diagnosis.get("documents") or []:
+            if str(document).strip():
+                affected_documents.append(str(document).strip())
+
+    stage_to_section = {
+        str(item.get("stage_id") or ""): str(item.get("section_id") or "")
+        for item in (state.get("workflow_plan") or {}).get("section_test_plan", []) or []
+        if isinstance(item, dict) and item.get("stage_id")
+    }
+    affected_sections = {stage_to_section.get(stage_id, stage_id) for stage_id in affected_stage_ids}
+    field_index = ((state.get("prompt_output") or {}).get("shared_prompt_context") or {}).get("field_index", [])
+    for field in field_index or []:
+        if not isinstance(field, dict):
+            continue
+        if affected_sections and field.get("section_id") not in affected_sections:
+            continue
+        if affected_sections and field.get("field_path"):
+            affected_field_paths.append(str(field["field_path"]))
+
+    affected_documents = sorted(set(affected_documents))
+    affected_stage_ids = sorted(set(affected_stage_ids))
+    affected_field_paths = sorted(set(affected_field_paths))
+    has_bounded_scope = bool(affected_documents or affected_stage_ids or affected_field_paths)
+    if feedback_type == "none":
+        impact_status = "no_reprocessing_required"
+    elif feedback_type == "record_exception":
+        impact_status = "current_record_only" if affected_documents else "needs_record_scope_confirmation"
+    elif feedback_type == "unresolved":
+        impact_status = "pending_expert_scope_decision"
+    else:
+        impact_status = "targeted_reprocessing_required" if has_bounded_scope else "needs_impact_scope_confirmation"
+
+    feedback_classification = {
+        "feedback_type": feedback_type,
+        "target_components": target_components,
+        "reason": reason,
+        "source": "human_and_step9_supervisor",
+        "preserve_original_artifacts": True,
+    }
+    impact_manifest = {
+        "status": impact_status,
+        "task_type": "automated_materials_database_construction",
+        "source_scope": "scientific_literature_only",
+        "affected_documents": affected_documents,
+        "affected_stage_ids": affected_stage_ids,
+        "affected_field_paths": affected_field_paths,
+        "selection_keys": [
+            "literature_document_id",
+            "field_rule_id_and_version",
+            "prompt_version",
+            "validator_version",
+            "applicability_conditions",
+        ],
+        "reprocess_policy": "rerun_only_affected_documents_stages_and_field_paths",
+        "preservation_policy": "retain_original_result_expert_edit_reason_impact_scope_and_reprocessed_result",
+    }
+    return feedback_classification, impact_manifest
 
 
 def build_reference_strategy_library(reference_pipeline):
@@ -458,10 +687,73 @@ def field_registry_from_step8(step8_output):
                 "required": required,
                 "source_basis": ["upstream_metadata"],
                 "concept_ids": [f"paper_metadata_{leaf}"],
+                "description": PAPER_METADATA_DESCRIPTIONS[leaf],
+                "extraction_notes": "Use authoritative retrieval/download metadata for this exact document. Preserve supplied values; leave unavailable metadata missing, and never use a cited paper or model-generated value as a substitute.",
                 "reason": "Canonical bibliographic field populated from retrieval/download metadata.",
             }
         )
+    for field in fields:
+        field_path = str(field.get("field_path") or "")
+        is_metadata = field_path.startswith("paper_info.")
+        field.setdefault("field_rule_id", "field." + safe_contract_id(field_path))
+        field.setdefault("core_field", bool(field.get("required")))
+        field.setdefault("core_field_source", "step8_system_design")
+        field.setdefault(
+            "inclusion_rule",
+            (
+                "Populate from authoritative download-time bibliographic metadata."
+                if is_metadata
+                else "Populate only from direct scientific-literature evidence matching the exact field semantics."
+            ),
+        )
+        field.setdefault(
+            "absence_rule",
+            "Use missing when absent and unresolved when relevant evidence is ambiguous; never invent a value.",
+        )
+        field.setdefault(
+            "evidence_requirements",
+            {
+                "direct_support_required": not is_metadata,
+                "locator_required": True,
+                "allowed_source_types": list(field.get("source_basis") or ["text"]),
+                "metadata_handoff_allowed": is_metadata,
+            },
+        )
+        field.setdefault(
+            "relation_constraints",
+            {
+                "entity_binding_required": not is_metadata,
+                "condition_binding_required": False,
+                "separate_instances": False,
+            },
+        )
+        if not str(field.get("field_rule_version") or "").startswith("sha256:"):
+            version_payload = {
+                key: field.get(key)
+                for key in (
+                    "field_path",
+                    "section_id",
+                    "description",
+                    "extraction_notes",
+                    "data_type",
+                    "required",
+                    "source_basis",
+                    "inclusion_rule",
+                    "absence_rule",
+                    "evidence_requirements",
+                    "relation_constraints",
+                )
+            }
+            digest = hashlib.sha256(
+                json.dumps(version_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest().upper()
+            field["field_rule_version"] = f"sha256:{digest}"
     return fields
+
+
+def safe_contract_id(value):
+    token = "".join(character if character.isalnum() else "_" for character in str(value or "").lower())
+    return "_".join(part for part in token.split("_") if part) or "unnamed"
 
 
 def normalize_section_id(section_id, field_path=""):
@@ -496,6 +788,55 @@ def group_fields_by_section(field_registry):
     return groups
 
 
+def dynamic_section_sort_key(section_id):
+    section_id = str(section_id or "")
+    root = section_id.split(".", 1)[0]
+    return (DYNAMIC_SECTION_RANK.get(root, 100), section_id)
+
+
+def workflow_section_order(groups):
+    dynamic_sections = sorted(
+        (
+            section_id
+            for section_id in groups
+            if section_id not in SECTION_ORDER and section_id != "figure_classification"
+        ),
+        key=dynamic_section_sort_key,
+    )
+    ordered = []
+    for section_id in SECTION_ORDER:
+        ordered.append(section_id)
+        if section_id == "figure_classification":
+            ordered.extend(dynamic_sections)
+    return ordered
+
+
+def default_section_dependencies(section_id, groups, figure_classification_enabled=False):
+    dependencies = []
+    if section_id != "paper_info" and "paper_info" in groups:
+        dependencies.append("paper_info")
+    if (
+        section_id not in {"paper_info", "material_info.section0"}
+        and "material_info.section0" in groups
+    ):
+        dependencies.append("material_info.section0")
+
+    root = str(section_id or "").split(".", 1)[0]
+    if root in {"process_info", "measurement_info"} and "sample_info" in groups:
+        dependencies.append("sample_info")
+    if root == "property_observation_info" and "measurement_info" in groups:
+        dependencies.append("measurement_info")
+
+    section_fields = groups.get(section_id, []) or []
+    if (
+        figure_classification_enabled
+        and section_id not in {"material_info.section3", "figure_classification"}
+        and any(is_figure_field(field) for field in section_fields)
+    ):
+        dependencies.append("figure_classification")
+    return list(dict.fromkeys(dependencies))
+
+
 def is_figure_field(field):
     path = str(field.get("field_path", "")).lower()
     source_basis = [str(item).lower() for item in field.get("source_basis", []) or []]
@@ -509,32 +850,36 @@ def build_workflow_plan(step8_output, prompt_output=None, reference_library=None
     has_section4 = bool(groups.get("material_info.section4"))
     has_section5 = bool(groups.get("section5"))
     has_section2 = bool(groups.get("material_info.section2"))
+    has_figure_classification = bool(figure_fields)
 
     section_test_plan = []
-    for section_id in SECTION_ORDER:
+    for section_id in workflow_section_order(groups):
         if section_id == "figure_classification":
-            if has_section4 and has_section5 and figure_fields:
+            if has_figure_classification:
+                classification_dependencies = []
+                if groups.get("material_info.section3"):
+                    classification_dependencies.append("material_info.section3")
+                elif groups.get("material_info.section0"):
+                    classification_dependencies.append("material_info.section0")
+                elif groups.get("paper_info"):
+                    classification_dependencies.append("paper_info")
                 section_test_plan.append(
                     {
                         "stage_id": "figure_classification",
                         "section_id": "figure_classification",
                         "purpose": "Classify figures before section4/section5 extraction to reduce curve/mechanism ownership errors.",
-                        "depends_on": ["material_info.section3"],
+                        "depends_on": classification_dependencies,
                         "test_focus": ["figure ownership", "allowed sections", "section4 versus section5 boundary"],
                     }
                 )
             continue
         if section_id not in groups and section_id != "paper_info":
             continue
-        depends_on = []
-        if section_id != "paper_info":
-            depends_on.append("paper_info")
-        if section_id in {"material_info.section1", "material_info.section2", "material_info.section3", "material_info.section4", "section5"}:
-            depends_on.append("material_info.section0")
-        if section_id == "material_info.section4" and has_section4 and has_section5 and figure_fields:
-            depends_on.append("figure_classification")
-        if section_id == "section5" and has_section4 and figure_fields:
-            depends_on.append("figure_classification")
+        depends_on = default_section_dependencies(
+            section_id,
+            groups,
+            figure_classification_enabled=has_figure_classification,
+        )
         if section_id == "material_info.section1" and has_section4:
             depends_on.append("material_info.section4")
         if section_id == "material_info.section2" and has_section2:
@@ -596,7 +941,8 @@ def build_workflow_plan(step8_output, prompt_output=None, reference_library=None
 
     return {
         "workflow_name": "step9_extraction_build_agent_system",
-        "objective": "Generate prompts and code, run section-wise extraction tests, and repair prompt/code/workflow based on measured extraction quality.",
+        "objective": "Construct queryable materials-database records from parsed scientific literature, run section-wise extraction tests, and repair prompt/code/workflow based on measured extraction quality.",
+        "task_contract": literature_task_contract(step8_output),
         "field_count": len(field_registry),
         "sections": [
             {"section_id": section_id, "field_count": len(fields)}
@@ -617,49 +963,172 @@ def build_workflow_plan(step8_output, prompt_output=None, reference_library=None
     }
 
 
+def stage_prompt_definition(stage, field_specs):
+    stage_id = stage["stage_id"]
+    section_id = stage["section_id"]
+    return {
+        "prompt": (
+            f"Run stage {stage_id} for {section_id} according to the Step8 schema. "
+            "The fixed task is automated materials-database construction from parsed scientific literature; do not reinterpret it as generic scientific-text conversion. "
+            "Return valid JSON only. Preserve evidence provenance with source_text, source_table, "
+            "source_figure, confidence, and missing_reason when values are absent. "
+            "Use output_contract.field_specs as the authoritative field semantics and data contract. "
+            "Only emit field_path values listed there, and account for every allowed field path exactly once. "
+            f"Respect dependencies: {', '.join(stage.get('depends_on', [])) or 'none'}. "
+            "If this stage repeatedly fails, consult workflow_plan.reference_strategy_library for known extraction patterns."
+        ),
+        "output_contract": {
+            "section_id": section_id,
+            "json_only": True,
+            "fields": [item["field_path"] for item in field_specs],
+            "field_specs": deepcopy(field_specs),
+        },
+    }
+
+
+def synchronize_prompt_field_contracts(prompt_output, workflow_plan):
+    """Reconcile every schema field with an executable stage contract."""
+    prompt_output = deepcopy(prompt_output or {})
+    workflow_plan = deepcopy(workflow_plan or {})
+    context = prompt_output.setdefault("shared_prompt_context", {})
+    field_index = [
+        field
+        for field in context.get("field_index", []) or []
+        if isinstance(field, dict) and field.get("field_path")
+    ]
+    groups = group_fields_by_section(field_index)
+    stages = workflow_plan.setdefault("section_test_plan", [])
+    existing_sections = {
+        str(stage.get("section_id") or "")
+        for stage in stages
+        if isinstance(stage, dict)
+    }
+    figure_classification_enabled = any(
+        stage.get("stage_id") == "figure_classification"
+        for stage in stages
+        if isinstance(stage, dict)
+    )
+    added_stages = []
+    for section_id in sorted(groups, key=dynamic_section_sort_key):
+        if section_id in existing_sections:
+            continue
+        stage = {
+            "stage_id": section_id,
+            "section_id": section_id,
+            "purpose": f"Extract and validate {section_id} fields.",
+            "depends_on": default_section_dependencies(
+                section_id,
+                groups,
+                figure_classification_enabled=figure_classification_enabled,
+            ),
+            "field_count": len(groups.get(section_id, [])),
+            "test_focus": ["json validity", "field coverage", "evidence provenance", "missing_reason"],
+            "repair_notes": ["Added by deterministic field-contract synchronization."],
+        }
+        stages.append(stage)
+        existing_sections.add(section_id)
+        added_stages.append(section_id)
+
+    modules = prompt_output.setdefault("module_outputs", {})
+    section_module = modules.setdefault("section_extraction_prompt_module", {})
+    prompts = section_module.setdefault("section_extraction_prompts", {})
+    synchronized_stages = []
+    for stage in stages:
+        if not isinstance(stage, dict) or not stage.get("stage_id") or not stage.get("section_id"):
+            continue
+        stage_id = stage["stage_id"]
+        section_id = stage["section_id"]
+        field_specs = groups.get(section_id, [])
+        existing_prompt = prompts.get(stage_id)
+        if not isinstance(existing_prompt, dict):
+            existing_prompt = stage_prompt_definition(stage, field_specs)
+            prompts[stage_id] = existing_prompt
+        output_contract = existing_prompt.setdefault("output_contract", {})
+        output_contract["section_id"] = section_id
+        output_contract["json_only"] = True
+        output_contract["fields"] = [item["field_path"] for item in field_specs]
+        output_contract["field_specs"] = deepcopy(field_specs)
+        synchronized_stages.append(stage_id)
+
+    section_module["field_coverage_index"] = deepcopy(field_index)
+    workflow_plan["execution_order"] = [
+        stage["stage_id"]
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("stage_id")
+    ]
+    context["workflow_plan"] = workflow_plan
+    result = prompt_output.setdefault("result", {})
+    result["workflow_execution_order"] = list(workflow_plan["execution_order"])
+    result.setdefault("prompt_modules", {})["section_extraction"] = prompts
+    return prompt_output, workflow_plan, {
+        "field_count": len(field_index),
+        "added_stages": added_stages,
+        "synchronized_stages": synchronized_stages,
+    }
+
+
 def build_prompt_package_from_step8(step8_output, workflow_plan):
     field_registry = field_registry_from_step8(step8_output)
+    schema_definition = (
+        ((step8_output.get("result") or {}).get("schema_definition") or {})
+        if isinstance(step8_output, dict)
+        else {}
+    )
+    shared_record_contracts = schema_definition.get("shared_record_contracts") or {}
     figure_fields = [field for field in field_registry if is_figure_field(field)]
     field_index = [
         {
             "field_path": field.get("field_path"),
             "section_id": normalize_section_id(field.get("section_id"), field.get("field_path")),
             "data_type": field.get("data_type"),
+            "description": field.get("description") or field.get("reason") or "",
+            "extraction_notes": field.get("extraction_notes") or "",
+            "required": bool(field.get("required")),
+            "core_field": bool(field.get("core_field")),
+            "core_field_source": field.get("core_field_source", "step8_system_design"),
             "source_basis": field.get("source_basis", []),
+            "inclusion_rule": field.get("inclusion_rule", ""),
+            "absence_rule": field.get("absence_rule", ""),
+            "field_rule_id": field.get("field_rule_id", ""),
+            "field_rule_version": field.get("field_rule_version", ""),
+            "evidence_requirements": field.get("evidence_requirements", {}),
+            "relation_constraints": field.get("relation_constraints", {}),
+            "concept_ids": field.get("concept_ids", []),
+            "object_contract": field.get("object_contract"),
+            "contract_refs": field.get("contract_refs", []),
+            "shared_contracts": {
+                ref: shared_record_contracts[ref]
+                for ref in field.get("contract_refs", []) or []
+                if ref in shared_record_contracts
+            },
+            "figure_constraint": field.get("figure_constraint"),
+            "reason": field.get("reason", ""),
         }
         for field in field_registry
     ]
     prompts = {}
     for stage in workflow_plan.get("section_test_plan", []):
         section_id = stage["section_id"]
-        prompts[stage["stage_id"]] = {
-            "prompt": (
-                f"Run stage {stage['stage_id']} for {section_id} according to the Step8 schema. "
-                "Return valid JSON only. Preserve evidence provenance with source_text, source_table, "
-                "source_figure, confidence, and missing_reason when values are absent. "
-                "Only emit field_path values listed in output_contract.fields, and account for every allowed field path exactly once. "
-                f"Respect dependencies: {', '.join(stage.get('depends_on', [])) or 'none'}. "
-                "If this stage repeatedly fails, consult workflow_plan.reference_strategy_library for known extraction patterns."
-            ),
-            "output_contract": {
-                "section_id": section_id,
-                "json_only": True,
-                "fields": [
-                    item["field_path"]
-                    for item in field_index
-                    if item["section_id"] == section_id
-                ][:200],
-            },
-        }
+        stage_field_specs = [
+            item for item in field_index if item["section_id"] == section_id
+        ]
+        prompts[stage["stage_id"]] = stage_prompt_definition(stage, stage_field_specs)
 
     return {
         "step": "step9_prompt_generation",
         "status": "success",
         "validation_errors": [],
         "shared_prompt_context": {
+            "task_contract": literature_task_contract(step8_output),
             "field_index": field_index,
+            "shared_record_contracts": shared_record_contracts,
             "figure_fields": figure_fields,
             "workflow_plan": workflow_plan,
+            "lineage_contract": (
+                ((step8_output.get("result") or {}).get("lineage_contract") or {})
+                if isinstance(step8_output, dict)
+                else {}
+            ),
         },
         "module_outputs": {
             "prompt_supervisor_module": {
@@ -702,6 +1171,9 @@ def load_inputs_node(state):
     args = dict_to_namespace(state["args"])
     step8_output = load_json_if_exists(args.step8_output)
     prompt_output = load_json_if_exists(args.prompt_output)
+    impact_manifest_input = load_json_if_exists(getattr(args, "impact_manifest_input", ""))
+    if impact_manifest_input.get("impact_manifest") and not impact_manifest_input.get("status"):
+        impact_manifest_input = impact_manifest_input["impact_manifest"]
     human_advice = load_human_advice(args)
     paper_metadata_by_document, paper_metadata_report = load_paper_metadata_for_documents(
         args.test_documents,
@@ -710,6 +1182,11 @@ def load_inputs_node(state):
     errors = []
     if not step8_output and not prompt_output:
         errors.append("Either --step8-output or --prompt-output must point to an existing JSON file.")
+    if impact_manifest_input:
+        if impact_manifest_input.get("task_type") != MATERIAL_LITERATURE_TASK_CONTRACT["task_type"]:
+            errors.append("Impact manifest task_type is outside automated materials-database construction.")
+        if impact_manifest_input.get("source_scope") != MATERIAL_LITERATURE_TASK_CONTRACT["source_scope"]:
+            errors.append("Impact manifest source_scope must be scientific_literature_only.")
     update = {
         "step8_output": step8_output,
         "prompt_output": prompt_output,
@@ -717,11 +1194,29 @@ def load_inputs_node(state):
         "human_advice_available_before_design": bool(human_advice),
         "paper_metadata_by_document": paper_metadata_by_document,
         "paper_metadata_report": paper_metadata_report,
+        "impact_manifest_input": impact_manifest_input,
         "validation_errors": errors,
         "retry_counts": {},
         "repair_history": [],
         "status": "running" if not errors else "needs_human_review",
     }
+    update = append_protocol_message(
+        state,
+        update,
+        sender="step9_input_loader",
+        phase="load_inputs",
+        status="rejected" if errors else "completed",
+        payload_refs={
+            "step8_output": "step8_output",
+            "prompt_output": "prompt_output",
+            "impact_manifest_input": "impact_manifest_input",
+        },
+        decision={"accepted_by_supervisor": not errors},
+        requested_actions=errors,
+        produced_artifacts=[{"ref": "paper_metadata_report"}],
+        next_route="supervisor_router" if errors else "workflow_plan",
+        evidence=errors,
+    )
     return write_state_snapshot(merge_update(state, update), "load_inputs", "supervisor_router" if errors else "workflow_plan")
 
 
@@ -733,8 +1228,19 @@ def workflow_plan_node(state):
         step8_output = {"result": {"schema_definition": {"field_registry": (prompt_output.get("shared_prompt_context") or {}).get("field_index", [])}}}
     reference_library = build_reference_strategy_library(args.reference_pipeline)
     workflow_plan = build_workflow_plan(step8_output, prompt_output, reference_library)
+    update = append_protocol_message(
+        state,
+        {"workflow_plan": workflow_plan, "status": "running"},
+        sender="workflow_planning_agent",
+        phase="workflow_plan",
+        status="completed",
+        payload_refs={"step8_schema": "step8_output.result.schema_definition"},
+        decision={"accepted_by_supervisor": True, "stage_count": len(workflow_plan.get("section_test_plan", []))},
+        produced_artifacts=[{"ref": "workflow_plan"}],
+        next_route="prompt_generate",
+    )
     return write_state_snapshot(
-        merge_update(state, {"workflow_plan": workflow_plan, "status": "running"}),
+        merge_update(state, update),
         "workflow_plan",
         "prompt_generate",
     )
@@ -747,8 +1253,19 @@ def prompt_generate_node(state):
     else:
         prompt_output.setdefault("shared_prompt_context", {})
         prompt_output["shared_prompt_context"]["workflow_plan"] = state["workflow_plan"]
+    update = append_protocol_message(
+        state,
+        {"prompt_output": prompt_output},
+        sender="prompt_generation_agent",
+        phase="prompt_generate",
+        status="completed",
+        payload_refs={"workflow_plan": "workflow_plan", "field_index": "prompt_output.shared_prompt_context.field_index"},
+        decision={"accepted_by_supervisor": True},
+        produced_artifacts=[{"ref": "prompt_output"}],
+        next_route="prompt_quality_review",
+    )
     return write_state_snapshot(
-        merge_update(state, {"prompt_output": prompt_output}),
+        merge_update(state, update),
         "prompt_generate",
         "prompt_quality_review",
     )
@@ -764,11 +1281,21 @@ def prompt_quality_review_node(state):
     else:
         update["validation_errors"] = []
         update["status"] = "running"
-    return write_state_snapshot(
-        merge_update(state, update),
-        "prompt_quality_review",
-        "supervisor_router" if update.get("validation_errors") else "code_generate_or_patch",
+    next_route = "supervisor_router" if update.get("validation_errors") else "code_generate_or_patch"
+    update = append_protocol_message(
+        state,
+        update,
+        sender="prompt_quality_reviewer",
+        phase="prompt_quality_review",
+        status="rejected" if update.get("validation_errors") else "accepted",
+        payload_refs={"prompt_package": "prompt_output", "judgement": "judgement"},
+        decision={"accepted_by_supervisor": not bool(update.get("validation_errors"))},
+        requested_actions=judgement.get("issues", []) if isinstance(judgement, dict) else [],
+        produced_artifacts=[{"ref": "judgement"}],
+        next_route=next_route,
+        evidence=update.get("validation_errors", []),
     )
+    return write_state_snapshot(merge_update(state, update), "prompt_quality_review", next_route)
 
 
 def prompt_repair_node(state):
@@ -777,6 +1304,10 @@ def prompt_repair_node(state):
     workflow_plan = state.get("workflow_plan") or {}
     eval_result = state.get("extraction_eval") or {}
     human_advice_text = advice_text(state.get("human_advice", [])) if state.get("human_review_applied") else ""
+    prompt_output, workflow_plan, field_contract_sync = synchronize_prompt_field_contracts(
+        prompt_output,
+        workflow_plan,
+    )
     repair_note = {
         "source": "prompt_repair_agent",
         "reason": "Supervisor routed prompt package through deterministic repair.",
@@ -785,6 +1316,7 @@ def prompt_repair_node(state):
         "warning_count": (judgement.get("summary") or {}).get("warning_count", 0),
         "evaluation_targets": eval_result.get("optimization_targets", []),
         "human_advice_used": bool(human_advice_text),
+        "field_contract_sync": field_contract_sync,
     }
 
     prompt_output.setdefault("shared_prompt_context", {})
@@ -818,16 +1350,42 @@ def prompt_repair_node(state):
 
     update = {
         "prompt_output": prompt_output,
+        "workflow_plan": workflow_plan,
         "validation_errors": [],
         "failed_node": "",
         "status": "running",
         "repair_history": append_repair_history(state, repair_note),
     }
+    update = append_protocol_message(
+        state,
+        update,
+        sender="prompt_repair_agent",
+        phase="prompt_repair",
+        status="completed",
+        payload_refs={"previous_prompt": "prompt_output", "evaluation": "extraction_eval"},
+        decision={"accepted_by_supervisor": True, "action": "revalidate_prompt"},
+        produced_artifacts=[{"ref": "prompt_output"}],
+        next_route="prompt_quality_review",
+    )
     return write_state_snapshot(merge_update(state, update), "prompt_repair", "prompt_quality_review")
+
+
+def next_fresh_attempt_dir(root, completed_count):
+    attempt_count = int(completed_count or 0) + 1
+    root = Path(root)
+    attempt_dir = root / f"attempt_{attempt_count:03d}"
+    while attempt_dir.exists():
+        attempt_count += 1
+        attempt_dir = root / f"attempt_{attempt_count:03d}"
+    return attempt_count, attempt_dir
 
 
 def code_generate_or_patch_node(state):
     args = dict_to_namespace(state["args"])
+    code_generation_attempt_count, generated_attempt_dir = next_fresh_attempt_dir(
+        args.generated_output_dir,
+        state.get("code_generation_attempt_count", 0),
+    )
     if args.skip_code_generation:
         code_agent = {
             "status": "skipped",
@@ -852,7 +1410,7 @@ def code_generate_or_patch_node(state):
             )
             code_agent = prompt_agent.parse_llm_json(raw_response)
             if args.write_generated_files:
-                prompt_agent.write_generated_files(code_agent, args.generated_output_dir)
+                prompt_agent.write_generated_files(code_agent, generated_attempt_dir)
         except Exception as exc:
             code_agent = {
                 "status": "llm_timeout_or_error",
@@ -861,8 +1419,25 @@ def code_generate_or_patch_node(state):
                 "code_change_plan": [],
                 "generated_files": [],
             }
+    code_agent["generation_attempt"] = code_generation_attempt_count
+    code_agent["generated_output_dir"] = str(generated_attempt_dir)
+    update = append_protocol_message(
+        state,
+        {
+            "code_agent": code_agent,
+            "code_generation_attempt_count": code_generation_attempt_count,
+            "status": "running",
+        },
+        sender="code_generation_agent",
+        phase="code_generate_or_patch",
+        status=code_agent.get("status", "completed"),
+        payload_refs={"prompt_package": "prompt_output", "judgement": "judgement"},
+        decision={"accepted_by_supervisor": code_agent.get("status") not in {"llm_timeout_or_error", "failed"}},
+        produced_artifacts=[{"ref": "code_agent"}],
+        next_route="extraction_test_run",
+    )
     return write_state_snapshot(
-        merge_update(state, {"code_agent": code_agent, "status": "running"}),
+        merge_update(state, update),
         "code_generate_or_patch",
         "extraction_test_run",
     )
@@ -931,7 +1506,20 @@ def code_repair_node(state):
             },
         ),
     }
-    return write_state_snapshot(merge_update(state, update), "code_repair", "write_output")
+    update = append_protocol_message(
+        state,
+        update,
+        sender="code_repair_agent",
+        phase="code_repair",
+        status="needs_code_action",
+        payload_refs={"diagnosis": "code_agent", "evaluation": "extraction_eval"},
+        decision={"accepted_by_supervisor": False, "action": "hold_and_report_impact"},
+        requested_actions=code_agent.get("code_change_plan", []),
+        produced_artifacts=[{"ref": "code_agent"}],
+        next_route="feedback_classification",
+        evidence=code_agent.get("blocked_reason", []),
+    )
+    return write_state_snapshot(merge_update(state, update), "code_repair", "feedback_classification")
 
 
 def extraction_test_run_node(state):
@@ -945,6 +1533,10 @@ def extraction_test_run_node(state):
         test_status = extraction_results.get("status", "completed")
         reason = "Loaded external extraction test results."
     elif not args.dry_run and test_docs:
+        extraction_attempt_count, extraction_attempt_dir = next_fresh_attempt_dir(
+            args.extraction_run_dir,
+            state.get("extraction_attempt_count", 0),
+        )
         extraction_test = downstream_extraction_runner.run_extraction_bench(
             workflow_plan=workflow_plan,
             prompt_output=state.get("prompt_output") or {},
@@ -954,38 +1546,85 @@ def extraction_test_run_node(state):
             model=args.model,
             temperature=args.temperature,
             max_tokens=args.extraction_max_tokens,
-            output_dir=args.extraction_run_dir,
+            output_dir=str(extraction_attempt_dir),
             max_documents=args.max_test_documents,
             max_document_chars=args.max_document_chars,
             max_fields_per_stage=args.max_fields_per_stage,
+            max_workers=getattr(args, "extraction_workers", 4),
             paper_metadata_by_document=state.get("paper_metadata_by_document") or {},
+            impact_manifest=state.get("impact_manifest_input") or {},
+            run_identity=state.get("run_identity"),
+            reuse_existing_outputs=False,
+        )
+        update = append_protocol_message(
+            state,
+            {
+                "extraction_test": extraction_test,
+                "extraction_attempt_count": extraction_attempt_count,
+                "status": "running",
+            },
+            sender="downstream_extraction_runner",
+            phase="extraction_test_run",
+            status=extraction_test.get("status", "completed"),
+            payload_refs={"workflow_plan": "workflow_plan", "impact_manifest": "impact_manifest_input"},
+            decision={"accepted_by_supervisor": extraction_test.get("status") == "completed"},
+            produced_artifacts=[{"ref": "extraction_test.section_results"}],
+            next_route="extraction_eval",
         )
         return write_state_snapshot(
-            merge_update(state, {"extraction_test": extraction_test, "status": "running"}),
+            merge_update(state, update),
             "extraction_test_run",
             "extraction_eval",
         )
     else:
+        selective_scope = downstream_extraction_runner.build_selective_reprocess_scope(
+            workflow_plan,
+            state.get("prompt_output") or {},
+            test_docs[: args.max_test_documents],
+            state.get("impact_manifest_input") or {},
+        )
+        selected_stage_ids = set(selective_scope.get("selected_stage_ids", []))
+        selected_fields_by_stage = selective_scope.get("selected_field_paths_by_stage", {})
         for stage in workflow_plan.get("section_test_plan", []):
+            if stage["stage_id"] not in selected_stage_ids:
+                continue
+            field_count = len(downstream_extraction_runner.stage_field_specs(state.get("prompt_output") or {}, stage["stage_id"]))
+            if stage["stage_id"] in selected_fields_by_stage:
+                field_count = len(selected_fields_by_stage[stage["stage_id"]])
             section_results.append(
                 {
                     "stage_id": stage["stage_id"],
                     "section_id": stage["section_id"],
                     "depends_on": stage.get("depends_on", []),
                     "status": "planned" if args.dry_run else "not_implemented",
-                    "test_documents": test_docs,
+                    "test_documents": selective_scope.get("selected_documents", []),
+                    "field_count_tested": field_count,
                     "checks": ["dependency_inputs_available", "json_validity", "field_coverage", "evidence_provenance"],
                 }
             )
         test_status = "dry_run_planned" if args.dry_run else "runner_missing"
+        if selective_scope.get("errors"):
+            test_status = "selection_rejected"
         reason = "Section-wise extraction tests are planned; plug in downstream_extraction_runner for live execution."
     extraction_test = {
         "status": test_status,
         "reason": reason,
         "section_results": section_results,
+        "selective_reprocess": locals().get("selective_scope", {}),
     }
+    update = append_protocol_message(
+        state,
+        {"extraction_test": extraction_test, "status": "running"},
+        sender="downstream_extraction_runner",
+        phase="extraction_test_run",
+        status=test_status,
+        payload_refs={"workflow_plan": "workflow_plan", "impact_manifest": "impact_manifest_input"},
+        decision={"accepted_by_supervisor": test_status in {"completed", "dry_run_planned"}},
+        produced_artifacts=[{"ref": "extraction_test.section_results"}],
+        next_route="extraction_eval",
+    )
     return write_state_snapshot(
-        merge_update(state, {"extraction_test": extraction_test, "status": "running"}),
+        merge_update(state, update),
         "extraction_test_run",
         "extraction_eval",
     )
@@ -1009,6 +1648,26 @@ def diagnose_section_result(section_result, unicode_normalized=False):
                 "likely_cause": "The download manifest or paper archive metadata was not handed off, or document and paper identifiers do not match.",
                 "recommended_repair": "Provide --paper-metadata or preserve paper_id/arXiv/DOI identifiers when converting PDF to Markdown.",
                 "route_hint": "workflow_repair",
+            }
+        )
+
+    transport_docs = [
+        item for item in doc_results if isinstance(item, dict) and item.get("status") == "transport_error"
+    ]
+    if transport_docs:
+        diagnoses.append(
+            {
+                "type": "retryable_transport_error",
+                "severity": "blocking",
+                "stage_id": stage_id,
+                "documents": [item.get("document") for item in transport_docs],
+                "evidence": [
+                    (item.get("checks") or {}).get("error", "transport error")
+                    for item in transport_docs[:3]
+                ],
+                "likely_cause": "The configured model endpoint rejected or temporarily failed one or more API calls.",
+                "recommended_repair": "Retry the failed extraction in a fresh attempt with HTTP backoff and lower bounded concurrency.",
+                "route_hint": "transport_retry",
             }
         )
 
@@ -1037,11 +1696,14 @@ def diagnose_section_result(section_result, unicode_normalized=False):
     field_coverage_ratio = float(summary.get("field_coverage_ratio", 0) or 0)
     is_postprocess_stage = stage_id == "unicode_normalization" or str(section_result.get("section_id", "")).startswith("postprocess.")
     complete_negative_result = extraction_outcome == "no_values_found" and field_coverage_ratio >= 1.0
+    complete_unresolved_result = extraction_outcome == "unresolved_requires_review" and field_coverage_ratio >= 1.0
     if status == "low_quality" or (
         extracted_total == 0
         and stage_id != "figure_classification"
+        and status not in {"invalid_json", "transport_error"}
         and not is_postprocess_stage
         and not complete_negative_result
+        and not complete_unresolved_result
     ):
         diagnoses.append(
             {
@@ -1116,6 +1778,8 @@ def build_extraction_judgement(section_results, extraction_test, workflow_plan, 
     route_votes = [item.get("route_hint") for item in diagnoses if item.get("route_hint")]
     if extraction_test.get("status") == "runner_missing":
         recommended = "code_repair"
+    elif any(route == "transport_retry" for route in route_votes):
+        recommended = "transport_retry"
     elif any(route == "workflow_repair" for route in route_votes):
         recommended = "workflow_repair"
     elif diagnoses:
@@ -1153,13 +1817,18 @@ def extraction_eval_node(state):
     blockers = []
     if extraction_test.get("status") == "runner_missing":
         blockers.append("No live extraction runner is connected.")
-    if not section_results:
+    if extraction_test.get("status") == "selection_rejected":
+        blockers.extend(
+            (extraction_test.get("selective_reprocess") or {}).get("errors", [])
+            or ["Selective reprocessing scope was rejected."]
+        )
+    if not section_results and extraction_test.get("status") != "completed_noop":
         blockers.append("No section-wise tests were planned.")
     failed_sections = [
         item
         for item in section_results
         if isinstance(item, dict)
-        and item.get("status") in {"failed", "needs_repair", "invalid_json", "low_quality", "metadata_missing"}
+        and item.get("status") in {"failed", "needs_repair", "invalid_json", "transport_error", "low_quality", "metadata_missing"}
     ]
     missing_dependency_sections = [
         item
@@ -1198,6 +1867,22 @@ def extraction_eval_node(state):
         update["next_node"] = "human_expert_review"
         update["schema_feedback"] = None
         update["supervisor_decision"] = None
+    update = append_protocol_message(
+        state,
+        update,
+        sender="extraction_evaluation_agent",
+        phase="extraction_eval",
+        status="rejected" if blockers else "accepted",
+        payload_refs={"test_results": "extraction_test.section_results", "judgement": "judgement"},
+        decision={
+            "accepted_by_supervisor": not blockers,
+            "recommended_next_action": recommended_next_action,
+        },
+        requested_actions=eval_result.get("optimization_targets", []),
+        produced_artifacts=[{"ref": "extraction_eval"}],
+        next_route="supervisor_router" if blockers else "human_expert_review",
+        evidence=blockers,
+    )
     return write_state_snapshot(
         merge_update(state, update),
         "extraction_eval",
@@ -1209,39 +1894,56 @@ def human_expert_review_node(state):
     args = dict_to_namespace(state["args"])
     human_advice = state.get("human_advice", []) or []
     if not human_advice and getattr(args, "skip_human_expert_review", False):
+        update = {
+            "human_expert_review": {
+                "status": "skipped",
+                "reason": "Human expert review was explicitly skipped by --skip-human-expert-review.",
+            },
+            "status": "success",
+        }
+        update = append_protocol_message(
+            state,
+            update,
+            sender="human_expert_review_gate",
+            phase="human_expert_review",
+            status="skipped",
+            payload_refs={"extraction_eval": "extraction_eval"},
+            decision={"accepted_by_supervisor": True, "explicit_skip": True},
+            next_route="feedback_classification",
+        )
         return write_state_snapshot(
-            merge_update(
-                state,
-                {
-                    "human_expert_review": {
-                        "status": "skipped",
-                        "reason": "Human expert review was explicitly skipped by --skip-human-expert-review.",
-                    },
-                    "status": "success",
-                },
-            ),
+            merge_update(state, update),
             "human_expert_review",
-            "write_output",
+            "feedback_classification",
         )
     if not human_advice:
+        update = {
+            "human_expert_review": {
+                "status": "waiting_for_human_advice",
+                "reason": "Internal Step9 evaluation passed. Human expert review is required unless --skip-human-expert-review is set.",
+                "required_advice": (
+                    "As the task-domain materials expert, either approve the current Step9 extraction/test result "
+                    "or describe concrete domain-output problems. Do not provide code or prompt implementation instructions."
+                ),
+            },
+            "status": "waiting_for_human_advice",
+            "next_node": "feedback_classification",
+        }
+        update = append_protocol_message(
+            state,
+            update,
+            sender="human_expert_review_gate",
+            phase="human_expert_review",
+            status="waiting_for_human_advice",
+            payload_refs={"extraction_eval": "extraction_eval"},
+            decision={"accepted_by_supervisor": False, "action": "hold_for_expert"},
+            requested_actions=[update["human_expert_review"]["required_advice"]],
+            next_route="feedback_classification",
+        )
         return write_state_snapshot(
-            merge_update(
-                state,
-                {
-                    "human_expert_review": {
-                        "status": "waiting_for_human_advice",
-                        "reason": "Internal Step9 evaluation passed. Human expert review is required unless --skip-human-expert-review is set.",
-                        "required_advice": (
-                            "As the task-domain materials expert, either approve the current Step9 extraction/test result "
-                            "or describe concrete domain-output problems. Do not provide code or prompt implementation instructions."
-                        ),
-                    },
-                    "status": "waiting_for_human_advice",
-                    "next_node": "write_output",
-                },
-            ),
+            merge_update(state, update),
             "human_expert_review",
-            "write_output",
+            "feedback_classification",
         )
 
     current_advice_text = advice_text(human_advice)
@@ -1255,23 +1957,32 @@ def human_expert_review_node(state):
         )
     )
     if current_advice_already_applied or advice_is_acceptance(human_advice):
+        update = {
+            "human_expert_review": {
+                "status": "accepted",
+                "advice": human_advice,
+                "reason": "Human expert advice was available before Step9 design, accepted the internally passing output, or the same advice was already applied once.",
+            },
+            "status": "success",
+            "validation_errors": [],
+            "schema_feedback": None,
+            "supervisor_decision": None,
+        }
+        update = append_protocol_message(
+            state,
+            update,
+            sender="human_expert_review_gate",
+            phase="human_expert_review",
+            status="accepted",
+            payload_refs={"expert_advice": "human_advice", "extraction_eval": "extraction_eval"},
+            decision={"accepted_by_supervisor": True},
+            produced_artifacts=[{"ref": "human_expert_review"}],
+            next_route="feedback_classification",
+        )
         return write_state_snapshot(
-            merge_update(
-                state,
-                {
-                    "human_expert_review": {
-                        "status": "accepted",
-                        "advice": human_advice,
-                        "reason": "Human expert advice was available before Step9 design, accepted the internally passing output, or the same advice was already applied once.",
-                    },
-                    "status": "success",
-                    "validation_errors": [],
-                    "schema_feedback": None,
-                    "supervisor_decision": None,
-                },
-            ),
+            merge_update(state, update),
             "human_expert_review",
-            "write_output",
+            "feedback_classification",
         )
 
     route = infer_human_advice_route(human_advice) or "prompt_repair"
@@ -1294,6 +2005,17 @@ def human_expert_review_node(state):
         "status": "awaiting_supervisor_decision",
         "failed_node": "extraction_eval",
     }
+    update = append_protocol_message(
+        state,
+        update,
+        sender="human_expert_review_gate",
+        phase="human_expert_review",
+        status="revision_requested",
+        payload_refs={"expert_advice": "human_advice", "extraction_eval": "extraction_eval"},
+        decision={"accepted_by_supervisor": False, "route_hint": route},
+        requested_actions=human_advice,
+        next_route="supervisor_router",
+    )
     return write_state_snapshot(merge_update(state, update), "human_expert_review", "supervisor_router")
 
 
@@ -1423,6 +2145,17 @@ def workflow_repair_node(state):
             },
         ),
     }
+    update = append_protocol_message(
+        state,
+        update,
+        sender="workflow_repair_agent",
+        phase="workflow_repair",
+        status="completed",
+        payload_refs={"previous_workflow": "workflow_plan", "evaluation": "extraction_eval"},
+        decision={"accepted_by_supervisor": True, "actions": repair_actions or ["no_structural_change"]},
+        produced_artifacts=[{"ref": "workflow_plan"}],
+        next_route="prompt_repair",
+    )
     return write_state_snapshot(merge_update(state, update), "workflow_repair", "prompt_repair")
 
 
@@ -1455,7 +2188,135 @@ def schema_feedback_node(state):
             {"source": "schema_feedback_agent", "action": "feedback_to_step8"},
         ),
     }
-    return write_state_snapshot(merge_update(state, update), "schema_feedback", "write_output")
+    update = append_protocol_message(
+        state,
+        update,
+        sender="schema_feedback_agent",
+        phase="schema_feedback",
+        status="needs_step8_review",
+        payload_refs={"evaluation": "extraction_eval", "feedback": "schema_feedback"},
+        decision={"accepted_by_supervisor": False, "action": "feedback_to_step8"},
+        requested_actions=schema_feedback.get("recommended_step8_actions", []),
+        produced_artifacts=[{"ref": "schema_feedback"}],
+        next_route="feedback_classification",
+    )
+    return write_state_snapshot(merge_update(state, update), "schema_feedback", "feedback_classification")
+
+
+def feedback_classification_node(state):
+    classification, _ = build_feedback_classification_and_impact(state)
+    update = append_protocol_message(
+        state,
+        {"feedback_classification": classification},
+        sender="feedback_classification_agent",
+        phase="feedback_classification",
+        status="completed",
+        payload_refs={
+            "human_review": "human_expert_review",
+            "schema_feedback": "schema_feedback",
+            "evaluation": "extraction_eval",
+        },
+        decision={"accepted_by_supervisor": True, "feedback_type": classification.get("feedback_type")},
+        produced_artifacts=[{"ref": "feedback_classification"}],
+        next_route="impact_analysis",
+        evidence=[classification.get("reason", "")],
+    )
+    return write_state_snapshot(merge_update(state, update), "feedback_classification", "impact_analysis")
+
+
+def impact_analysis_node(state):
+    classification, impact_manifest = build_feedback_classification_and_impact(state)
+    impact_manifest["executable_selector"] = {
+        "runner_argument": "--impact-manifest-input",
+        "documents": impact_manifest.get("affected_documents", []),
+        "stage_ids": impact_manifest.get("affected_stage_ids", []),
+        "field_paths": impact_manifest.get("affected_field_paths", []),
+        "include_stage_dependencies": True,
+        "force_targeted_outputs": True,
+        "preserve_unaffected_outputs": True,
+    }
+    update = append_protocol_message(
+        state,
+        {"feedback_classification": classification, "impact_manifest": impact_manifest},
+        sender="impact_analysis_agent",
+        phase="impact_analysis",
+        status=impact_manifest.get("status", "completed"),
+        payload_refs={"feedback_classification": "feedback_classification", "workflow_plan": "workflow_plan"},
+        decision={
+            "bounded_scope": bool(
+                impact_manifest.get("affected_documents")
+                or impact_manifest.get("affected_stage_ids")
+                or impact_manifest.get("affected_field_paths")
+            )
+        },
+        produced_artifacts=[{"ref": "impact_manifest"}],
+        next_route="impact_supervisor",
+    )
+    return write_state_snapshot(merge_update(state, update), "impact_analysis", "impact_supervisor")
+
+
+def impact_supervisor_node(state):
+    manifest = deepcopy(state.get("impact_manifest") or {})
+    status = manifest.get("status")
+    bounded = bool(
+        manifest.get("affected_documents")
+        or manifest.get("affected_stage_ids")
+        or manifest.get("affected_field_paths")
+    )
+    task_locked = (
+        manifest.get("task_type") == MATERIAL_LITERATURE_TASK_CONTRACT["task_type"]
+        and manifest.get("source_scope") == MATERIAL_LITERATURE_TASK_CONTRACT["source_scope"]
+    )
+    if not task_locked:
+        decision = {
+            "status": "rejected",
+            "action": "hold_invalid_task_scope",
+            "reason": "Impact scope does not preserve the materials-database scientific-literature task contract.",
+        }
+    elif status == "no_reprocessing_required":
+        decision = {
+            "status": "approved",
+            "action": "no_reprocessing",
+            "reason": "No feedback changes a record, schema, rule, prompt, validator, or workflow.",
+        }
+    elif status in {"current_record_only", "targeted_reprocessing_required"} and bounded:
+        decision = {
+            "status": "approved",
+            "action": "approve_selective_reprocess",
+            "reason": "The impact manifest provides bounded document, stage, or field selectors.",
+        }
+    else:
+        decision = {
+            "status": "needs_human_scope_confirmation",
+            "action": "hold_unbounded_reprocess",
+            "reason": "Historical reprocessing is not allowed until its document, stage, or field scope is bounded.",
+        }
+    manifest["supervisor_approval"] = decision
+    final_status = state.get("status", "needs_human_review")
+    if decision["status"] == "needs_human_scope_confirmation" and final_status != "waiting_for_human_advice":
+        final_status = "needs_human_review"
+    update = {
+        "impact_manifest": manifest,
+        "impact_supervisor_decision": decision,
+        "status": final_status,
+    }
+    update = append_protocol_message(
+        state,
+        update,
+        sender="impact_supervisor",
+        receiver="step9_output_writer",
+        phase="impact_supervision",
+        status=decision["status"],
+        payload_refs={"impact_manifest": "impact_manifest", "feedback_classification": "feedback_classification"},
+        decision=decision,
+        requested_actions=["bound affected documents, stages, or field paths"]
+        if decision["status"] == "needs_human_scope_confirmation"
+        else [],
+        produced_artifacts=[{"ref": "impact_supervisor_decision"}],
+        next_route="write_output",
+        evidence=[decision["reason"]],
+    )
+    return write_state_snapshot(merge_update(state, update), "impact_supervisor", "write_output")
 
 
 def supervisor_router_node(state):
@@ -1499,6 +2360,18 @@ def supervisor_router_node(state):
             "reason": "Human advice indicates Step8 schema/field design should be reviewed.",
             "next_node": "schema_feedback",
         }
+    elif failed_node == "extraction_eval" and recommended_action == "transport_retry" and retry_count < max_retries:
+        retry_counts[failed_node] = retry_count + 1
+        updated_args = deepcopy(state["args"])
+        previous_workers = max(1, int(updated_args.get("extraction_workers", 1) or 1))
+        updated_args["extraction_workers"] = max(1, previous_workers // 2)
+        decision = {
+            "action": "transport_retry",
+            "reason": "Retryable API transport or rate-limit failures require a fresh extraction attempt, not prompt repair.",
+            "previous_extraction_workers": previous_workers,
+            "next_extraction_workers": updated_args["extraction_workers"],
+            "next_node": "extraction_test_run",
+        }
     elif failed_node == "extraction_eval" and recommended_action == "workflow_repair" and retry_count < max_retries:
         retry_counts[failed_node] = retry_count + 1
         decision = {
@@ -1529,16 +2402,34 @@ def supervisor_router_node(state):
         decision = {
             "action": "needs_human_review",
             "reason": "No safe automatic route remains.",
-            "next_node": "write_output",
+            "next_node": "feedback_classification",
         }
+
+    if decision.get("next_node") == "write_output":
+        decision["next_node"] = "feedback_classification"
 
     update = {
         "supervisor_decision": decision,
         "retry_counts": retry_counts,
-        "status": "running" if decision["next_node"] != "write_output" else state.get("status", "needs_human_review"),
+        "status": "running" if decision["next_node"] != "feedback_classification" else state.get("status", "needs_human_review"),
     }
-    if decision["next_node"] != "write_output":
+    if decision.get("action") == "transport_retry":
+        update["args"] = updated_args
+    if decision["next_node"] != "feedback_classification":
         update["validation_errors"] = []
+    update = append_protocol_message(
+        state,
+        update,
+        sender="step9_supervisor",
+        receiver=decision["next_node"],
+        phase="supervisor_router",
+        status="routed",
+        payload_refs={"validation_errors": "validation_errors", "evaluation": "extraction_eval"},
+        decision=decision,
+        requested_actions=[decision.get("action")],
+        next_route=decision["next_node"],
+        evidence=errors,
+    )
     return write_state_snapshot(merge_update(state, update), "supervisor_router", decision["next_node"])
 
 
@@ -1570,15 +2461,25 @@ def write_output_node(state):
                 "reason": "Human expert review was explicitly skipped or not required for this run.",
                 "source": "write_output_audit_fallback",
             }
+    feedback_classification = state.get("feedback_classification")
+    impact_manifest = state.get("impact_manifest")
+    if not feedback_classification or not impact_manifest:
+        feedback_classification, impact_manifest = build_feedback_classification_and_impact(
+            {**state, "human_expert_review": human_expert_review}
+        )
+    protocol_messages = state.get("protocol_messages") or []
     output = {
         "step": "step9_extraction_build_agent_system",
         "status": state.get("status", "needs_human_review"),
+        "run_identity": state.get("run_identity"),
+        "task_contract": literature_task_contract(state.get("step8_output") or {}),
         "inputs": {
             "step8_output": args.step8_output,
             "prompt_output": args.prompt_output,
             "test_documents": args.test_documents,
             "paper_metadata": args.paper_metadata,
             "dry_run": args.dry_run,
+            "impact_manifest_input": getattr(args, "impact_manifest_input", ""),
         },
         "paper_metadata_report": state.get("paper_metadata_report", {}),
         "workflow_plan": state.get("workflow_plan"),
@@ -1588,14 +2489,31 @@ def write_output_node(state):
         "extraction_test": state.get("extraction_test"),
         "extraction_eval": extraction_eval,
         "schema_feedback": state.get("schema_feedback"),
+        "feedback_classification": feedback_classification,
+        "impact_manifest": impact_manifest,
+        "impact_manifest_input": state.get("impact_manifest_input", {}),
+        "impact_supervisor_decision": state.get("impact_supervisor_decision"),
         "supervisor_decision": state.get("supervisor_decision"),
         "human_expert_review": human_expert_review,
         "human_advice": state.get("human_advice", []),
         "repair_history": state.get("repair_history", []),
         "validation_errors": state.get("validation_errors", []),
+        "protocol_messages": protocol_messages,
+        "protocol_validation": agent_protocol.validate_message_list(protocol_messages),
     }
     output_path = Path(args.output)
-    output_path.write_text(json_dumps(output), encoding="utf-8")
+    impact_path = output_path.with_suffix(output_path.suffix + ".impact.json")
+    output["impact_manifest_path"] = str(impact_path)
+    run_artifact_guard.atomic_write_json(
+        output_path,
+        output,
+        run_identity=state.get("run_identity"),
+    )
+    run_artifact_guard.atomic_write_json(
+        impact_path,
+        impact_manifest,
+        run_identity=state.get("run_identity"),
+    )
     print(f"Saved Step9 result to {output_path}")
     print(f"Status: {output['status']}")
     return write_state_snapshot(merge_update(state, {"output": str(output_path)}), "write_output", "__end__")
@@ -1605,8 +2523,18 @@ def next_node(state):
     return (state.get("supervisor_decision") or {}).get("next_node", state.get("next_node") or "write_output")
 
 
+def resume_router_node(state):
+    return state
+
+
+def resume_next_node(state):
+    node = state.get("next_node") or "load_inputs"
+    return "write_output" if node == "__end__" else node
+
+
 def build_step9_graph():
     graph = StateGraph(Step9State)
+    graph.add_node("resume_router", resume_router_node)
     graph.add_node("load_inputs", load_inputs_node)
     graph.add_node("workflow_plan", workflow_plan_node)
     graph.add_node("prompt_generate", prompt_generate_node)
@@ -1619,22 +2547,29 @@ def build_step9_graph():
     graph.add_node("human_expert_review", human_expert_review_node)
     graph.add_node("workflow_repair", workflow_repair_node)
     graph.add_node("schema_feedback", schema_feedback_node)
+    graph.add_node("feedback_classification", feedback_classification_node)
+    graph.add_node("impact_analysis", impact_analysis_node)
+    graph.add_node("impact_supervisor", impact_supervisor_node)
     graph.add_node("supervisor_router", supervisor_router_node)
     graph.add_node("write_output", write_output_node)
 
-    graph.add_edge(START, "load_inputs")
+    graph.add_edge(START, "resume_router")
+    graph.add_conditional_edges("resume_router", resume_next_node)
     graph.add_conditional_edges("load_inputs", lambda state: state.get("next_node", "workflow_plan"))
     graph.add_edge("workflow_plan", "prompt_generate")
     graph.add_edge("prompt_generate", "prompt_quality_review")
     graph.add_conditional_edges("prompt_quality_review", lambda state: state.get("next_node", "code_generate_or_patch"))
     graph.add_edge("prompt_repair", "prompt_quality_review")
     graph.add_edge("code_generate_or_patch", "extraction_test_run")
-    graph.add_edge("code_repair", "write_output")
+    graph.add_edge("code_repair", "feedback_classification")
     graph.add_edge("extraction_test_run", "extraction_eval")
     graph.add_conditional_edges("extraction_eval", lambda state: state.get("next_node", "write_output"))
     graph.add_conditional_edges("human_expert_review", lambda state: state.get("next_node", "write_output"))
     graph.add_edge("workflow_repair", "prompt_repair")
-    graph.add_edge("schema_feedback", "write_output")
+    graph.add_edge("schema_feedback", "feedback_classification")
+    graph.add_edge("feedback_classification", "impact_analysis")
+    graph.add_edge("impact_analysis", "impact_supervisor")
+    graph.add_edge("impact_supervisor", "write_output")
     graph.add_conditional_edges("supervisor_router", next_node)
     graph.add_edge("write_output", END)
     return graph.compile(checkpointer=MemorySaver())
@@ -1658,18 +2593,40 @@ def build_parser():
         help="Optional metadata JSON files/directories. When omitted, Step9 auto-discovers paper_archive/metadata near test documents.",
     )
     parser.add_argument("--extraction-results", default="", help="Optional JSON file with live section-wise extraction test results.")
+    parser.add_argument(
+        "--impact-manifest-input",
+        default="",
+        help="Optional approved Step9 impact manifest used to rerun only affected literature documents, stages, and fields.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Plan section-wise extraction tests without executing a live runner.")
     parser.add_argument("--skip-code-generation", action="store_true", help="Skip LLM code generation and only build/evaluate the workflow plan.")
     parser.add_argument("--base-url", default=prompt_agent.DEFAULT_BASE_URL)
     parser.add_argument("--api-key", default=os.getenv("CODE_AGENT_API_KEY"))
     parser.add_argument("--model", default=prompt_agent.DEFAULT_MODEL)
     parser.add_argument("--temperature", type=float, default=0)
-    parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--extraction-max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=384000)
+    parser.add_argument("--extraction-max-tokens", type=int, default=384000)
     parser.add_argument("--extraction-run-dir", default="step9_extraction_runs")
     parser.add_argument("--max-test-documents", type=int, default=4)
-    parser.add_argument("--max-document-chars", type=int, default=26000)
-    parser.add_argument("--max-fields-per-stage", type=int, default=80)
+    parser.add_argument("--max-document-chars", type=int, default=200000)
+    parser.add_argument(
+        "--max-fields-per-stage",
+        type=int,
+        default=80,
+        help=(
+            "Maximum fields sent in one extraction API call. Larger stages are fully batched; "
+            "this never truncates or caps the schema field inventory."
+        ),
+    )
+    parser.add_argument(
+        "--extraction-workers",
+        type=int,
+        default=4,
+        help=(
+            "Maximum concurrent document extraction calls within one dependency stage. "
+            "Stages remain ordered by their dependency topology."
+        ),
+    )
     parser.add_argument("--human-advice", nargs="*", default=[], help="Optional human suggestions used by the Step9 supervisor/repair agents.")
     parser.add_argument("--human-advice-file", default="", help="Optional text or JSON file containing human suggestions.")
     parser.add_argument("--max-human-advice-rounds", type=int, default=2)
@@ -1683,13 +2640,26 @@ def build_parser():
         help="Explicitly skip the post-internal-pass human expert review gate.",
     )
     parser.add_argument("--thread-id", default="step9-extraction-build")
+    parser.add_argument(
+        "--resume-from-state",
+        default="",
+        help="Resume from a previously written Step9 *.state.json snapshot.",
+    )
     return parser
 
 
-def main():
+def _legacy_main_without_clean_run_guard():
     args = build_parser().parse_args()
     app = build_step9_graph()
-    initial_state = {"args": vars(args), "next_node": "load_inputs"}
+    args_dict = vars(args)
+    resume_from_state = args_dict.pop("resume_from_state")
+    if resume_from_state:
+        initial_state = load_json_if_exists(resume_from_state)
+        if not initial_state:
+            raise FileNotFoundError(f"Step9 resume state not found or empty: {resume_from_state}")
+        initial_state["args"] = args_dict
+    else:
+        initial_state = {"args": args_dict, "next_node": "load_inputs"}
     result = app.invoke(initial_state, config={"configurable": {"thread_id": args.thread_id}})
     print(
         json.dumps(
@@ -1698,6 +2668,143 @@ def main():
                 "output": result.get("output"),
                 "current_node": result.get("current_node"),
                 "next_node": result.get("next_node"),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def build_step9_input_identity(args_dict):
+    input_paths = [
+        args_dict.get("step8_output", ""),
+        args_dict.get("prompt_output", ""),
+        args_dict.get("reference_pipeline", ""),
+        args_dict.get("extraction_results", ""),
+        args_dict.get("impact_manifest_input", ""),
+        *list(args_dict.get("test_documents") or []),
+        *list(args_dict.get("paper_metadata") or []),
+        *list(args_dict.get("target_files") or []),
+    ]
+    immutable_inputs = {
+        key: deepcopy(args_dict.get(key))
+        for key in (
+            "step8_output",
+            "prompt_output",
+            "reference_pipeline",
+            "test_documents",
+            "paper_metadata",
+            "extraction_results",
+            "impact_manifest_input",
+            "dry_run",
+            "skip_code_generation",
+            "model",
+            "temperature",
+            "max_tokens",
+            "extraction_max_tokens",
+            "max_test_documents",
+            "max_document_chars",
+            "max_fields_per_stage",
+            "extraction_workers",
+            "target_files",
+            "write_generated_files",
+        )
+    }
+    return run_artifact_guard.build_input_identity(
+        "step9_extraction_build",
+        immutable_inputs,
+        input_paths,
+    )
+
+
+def main():
+    args = build_parser().parse_args()
+    app = build_step9_graph()
+    args_dict = vars(args).copy()
+    requested_thread_id = args_dict.pop("thread_id")
+    resume_from_state = args_dict.pop("resume_from_state")
+
+    if resume_from_state:
+        initial_state = load_json_if_exists(resume_from_state)
+        if not initial_state:
+            raise FileNotFoundError(
+                f"Step9 resume state not found or empty: {resume_from_state}"
+            )
+        snapshot_args = deepcopy(initial_state.get("args") or {})
+        if args.api_key:
+            snapshot_args["api_key"] = args.api_key
+        input_identity = build_step9_input_identity(snapshot_args)
+        run_identity = run_artifact_guard.validate_resume_identity(
+            initial_state,
+            pipeline="step9_extraction_build",
+            input_identity=input_identity,
+            output_path=snapshot_args.get("output", ""),
+        )
+        initial_state["args"] = snapshot_args
+        initial_state["run_identity"] = run_identity
+        if args.human_advice or args.human_advice_file:
+            snapshot_args["human_advice"] = list(args.human_advice or [])
+            snapshot_args["human_advice_file"] = args.human_advice_file
+            initial_state["args"] = snapshot_args
+            resume_advice = load_human_advice(dict_to_namespace(snapshot_args))
+            initial_state = inject_resume_human_advice(initial_state, resume_advice)
+        run_artifact_guard.update_run_status(
+            run_identity,
+            "running",
+            resumed_from=str(Path(resume_from_state).resolve(strict=False)),
+        )
+    else:
+        input_identity = build_step9_input_identity(args_dict)
+        output_path = Path(args_dict["output"])
+        state_path = state_path_from_args(dict_to_namespace(args_dict))
+        impact_path = output_path.with_suffix(output_path.suffix + ".impact.json")
+        artifacts = [
+            output_path,
+            state_path,
+            impact_path,
+            args_dict.get("extraction_run_dir", ""),
+        ]
+        if args_dict.get("write_generated_files"):
+            artifacts.append(args_dict.get("generated_output_dir", ""))
+        run_identity = run_artifact_guard.reserve_fresh_run(
+            pipeline="step9_extraction_build",
+            output_path=output_path,
+            input_identity=input_identity,
+            artifact_paths=artifacts,
+        )
+        initial_state = {
+            "args": args_dict,
+            "next_node": "load_inputs",
+            "run_identity": run_identity,
+        }
+
+    config = {
+        "configurable": {
+            "thread_id": f"{requested_thread_id}:{run_identity['run_id']}"
+        }
+    }
+    try:
+        result = app.invoke(initial_state, config=config)
+    except BaseException as exc:
+        run_artifact_guard.update_run_status(
+            run_identity,
+            "interrupted",
+            error_type=type(exc).__name__,
+        )
+        raise
+    result_status = result.get("status") if isinstance(result, dict) else "unknown"
+    run_artifact_guard.update_run_status(
+        run_identity,
+        "completed" if result_status == "success" else "needs_review",
+        result_status=result_status,
+    )
+    print(
+        json.dumps(
+            {
+                "status": result.get("status"),
+                "output": result.get("output"),
+                "current_node": result.get("current_node"),
+                "next_node": result.get("next_node"),
+                "run_id": run_identity["run_id"],
             },
             ensure_ascii=False,
         )

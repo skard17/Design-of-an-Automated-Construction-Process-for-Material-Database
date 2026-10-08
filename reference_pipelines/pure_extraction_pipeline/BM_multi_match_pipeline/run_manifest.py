@@ -139,10 +139,11 @@ def run_manifest(paper_id: str | None = None) -> None:
         api_key=api_key,
         temperature=float(stage_cfg.get("temperature", 0.0)),
         timeout_sec=int(provider.get("timeout_sec", 60)),
-        system_prompt="You are an expert in superconducting materials information extraction.",
+        system_prompt="You are an expert in materials science information extraction and database construction.",
     )
     out_text = clean_llm_output(response)
     manifest_data = postprocess_manifest(json.loads(out_text))
+    manifest_data["paper_id"] = paper_id
     out_path = write_named_output(
         resolved_paths["outputs_dir"],
         "manifests",

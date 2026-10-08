@@ -11,9 +11,12 @@ def summarize_target(data: dict) -> dict:
     material_info = data.get("material_info", {}) or {}
     section0 = material_info.get("section0", {}) or {}
     section1 = material_info.get("section1", {}) or {}
+    metadata = ((data.get("paper_info") or {}).get("metadata") or {})
+    quality_control = data.get("quality_control") or (metadata.get("quality_control") or {})
+    provenance = data.get("provenance") or (metadata.get("multi_material_provenance") or {})
     return {
-        "target_id": data.get("target_id"),
-        "canonical_name": data.get("canonical_name"),
+        "target_id": data.get("target_id") or metadata.get("target_id"),
+        "canonical_name": data.get("canonical_name") or metadata.get("canonical_name"),
         "section0_counts": {
             key: len(value)
             for key, value in section0.items()
@@ -24,13 +27,16 @@ def summarize_target(data: dict) -> dict:
             for key, value in section1.items()
             if isinstance(value, list) and value
         },
-        "accepted_candidate_count": len((data.get("provenance") or {}).get("accepted_candidate_ids", [])),
-        "ambiguous_candidate_count": len((data.get("provenance") or {}).get("ambiguous_candidate_ids", [])),
-        "ambiguity_flags": list((data.get("quality_control") or {}).get("ambiguity_flags", [])),
-        "has_target_specific_superconducting_evidence": bool(
-            (data.get("quality_control") or {}).get("has_target_specific_superconducting_evidence", False)
+        "accepted_candidate_count": len(provenance.get("accepted_candidate_ids", [])),
+        "ambiguous_candidate_count": len(provenance.get("ambiguous_candidate_ids", [])),
+        "ambiguity_flags": list(quality_control.get("ambiguity_flags", [])),
+        "has_target_specific_property_evidence": bool(
+            quality_control.get(
+                "has_target_specific_property_evidence",
+                quality_control.get("has_target_specific_superconducting_evidence", False),
+            )
         ),
-        "omission_reasons": list((data.get("quality_control") or {}).get("omission_reasons", [])),
+        "omission_reasons": list(quality_control.get("omission_reasons", [])),
     }
 
 
@@ -64,7 +70,7 @@ def build_snapshot(outputs_dir: Path) -> dict:
     totals = {
         "paper_count": len(papers),
         "target_count": sum(item["target_count"] for item in papers.values()),
-        "targets_with_section1": sum(
+        "targets_with_properties": sum(
             1
             for paper in papers.values()
             for target in paper["targets"]

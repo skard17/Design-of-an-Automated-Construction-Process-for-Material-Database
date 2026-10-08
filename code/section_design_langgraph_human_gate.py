@@ -1,7 +1,11 @@
 import argparse
+import hashlib
 import json
+from task_domain_knowledge import attach_to_context
 import re
+import sys
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -10,6 +14,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 import section_design_agent as section_agent
+import run_artifact_guard
+from field_definition_contract import apply_definitions
 from section_design_agent_prompt import (
     STEP8_FRAMEWORK,
     build_aggregation_prompt,
@@ -29,6 +35,13 @@ from section_design_agent_prompt import (
 )
 
 
+def print_console_safe(value):
+    """Print dynamic CLI output without failing on narrow Windows code pages."""
+    text = str(value)
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(encoding, errors="backslashreplace").decode(encoding))
+
+
 class SectionDesignGraphState(TypedDict, total=False):
     args: dict[str, Any]
     shared_context: dict[str, Any]
@@ -37,6 +50,11 @@ class SectionDesignGraphState(TypedDict, total=False):
     module_errors: dict[str, Any]
     validation_errors: list[str]
     human_advice: str
+    post_design_human_advice: str
+    applied_human_advice: str
+    human_review_round: int
+    human_review_applied: bool
+    allow_local_critic_bypass_after_human_advice: bool
     result: dict[str, Any]
     status: str
     output: str
@@ -48,6 +66,14 @@ class SectionDesignGraphState(TypedDict, total=False):
     retry_counts: dict[str, int]
     repair_instructions: list[str]
     force_deterministic_schema_compilation: bool
+    schema_revision: int
+    critic_reviewed_schema_revision: int
+    blocker_history: list[dict[str, Any]]
+    schema_iteration_history: list[dict[str, Any]]
+    schema_inspection_approved_through: int
+    schema_inspection_resume_node: str
+    rejected_critic_patch_hashes: list[str]
+    run_identity: dict[str, Any]
 
 
 def namespace_to_dict(args):
@@ -79,8 +105,31 @@ GRAPH_SEQUENCE = [
     "write_output",
 ]
 
+NODE_MODULE_OUTPUTS = {
+    "prepare": "__shared_context__",
+    "supervisor_router": "__supervisor_decision__",
+    "locating": "locating_module",
+    "mechanism": "mechanism_requirement_module",
+    "query_semantics": "query_semantics_module",
+    "evidence_model": "evidence_model_module",
+    "subjective_supervisor": "subjective_supervisor_module",
+    "topic_adaptation": "topic_adaptation_module",
+    "section_partition": "section_partition_module",
+    "field_planning": "field_planning_module",
+    "human_advice_gate": "__human_gate__",
+    "supervisor": "supervisor_module",
+    "figure_classification": "figure_classification_module",
+    "schema_design": "schema_design_module",
+    "schema_design_repair": "schema_design_module",
+    "specialization_critic": "specialization_critic_module",
+    "aggregation": "aggregation",
+    "write_output": "__result__",
+}
+
 
 def state_path_from_args(args):
+    if getattr(args, "checkpoint_output", ""):
+        return Path(args.checkpoint_output)
     output_path = Path(args.output)
     return output_path.with_suffix(output_path.suffix + ".state.json")
 
@@ -88,6 +137,21 @@ def state_path_from_args(args):
 def human_gate_context_path_from_args(args):
     output_path = Path(args.output)
     return output_path.with_suffix(output_path.suffix + ".human_gate_context.json")
+
+
+def schema_history_dir_from_args(args):
+    snapshot_path = state_path_from_args(args)
+    return snapshot_path.parent / f"{snapshot_path.stem}.schema_history"
+
+
+def event_history_dir_from_args(args):
+    snapshot_path = state_path_from_args(args)
+    return snapshot_path.parent / f"{snapshot_path.stem}.events"
+
+
+def schema_iteration_log_path_from_args(args):
+    snapshot_path = state_path_from_args(args)
+    return snapshot_path.parent / f"{snapshot_path.stem}.schema_iterations.json"
 
 
 def json_safe_state(state):
@@ -107,7 +171,17 @@ def json_safe_state(state):
         if isinstance(value, list):
             return [clean(item, key_name) for item in value]
         if isinstance(value, str):
-            limit = 5000 if key_name in {"prompt", "raw_response"} else 50000
+            limit = (
+                2000000
+                if key_name
+                in {
+                    "prompt",
+                    "raw_response",
+                    "reference_paper_context",
+                    "shared_context_block",
+                }
+                else 500000
+            )
             if len(value) > limit:
                 return value[:limit] + "\n...[truncated in state snapshot]..."
             return value
@@ -118,21 +192,432 @@ def json_safe_state(state):
     return clean(state)
 
 
+SCHEMA_ITERATION_NODES = {
+    "field_planning",
+    "schema_design",
+    "schema_design_repair",
+    "specialization_critic",
+    "aggregation",
+    "supervisor_router",
+    "human_advice_gate",
+}
+
+
+def _schema_field_map(schema):
+    return {
+        str(item.get("field_path")): item
+        for item in (schema or {}).get("field_registry") or []
+        if isinstance(item, dict) and item.get("field_path")
+    }
+
+
+def _schema_digest(schema):
+    return hashlib.sha256(
+        json.dumps(
+            json_safe_state(schema or {}),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _critic_iteration_summary(critic):
+    if not isinstance(critic, dict):
+        return None
+    operations = []
+    for item in critic.get("patch_operations") or []:
+        if not isinstance(item, dict):
+            continue
+        operations.append(
+            {
+                "op": item.get("op"),
+                "field_path": item.get("field_path"),
+                "target_path": item.get("target_path"),
+                "reason": item.get("reason"),
+            }
+        )
+    return json_safe_state(
+        {
+            "reviewed_schema_revision": critic.get("reviewed_schema_revision"),
+            "redo_needed": critic.get("redo_needed"),
+            "is_generic": critic.get("is_generic"),
+            "missing_concepts": critic.get("missing_concepts") or [],
+            "redo_directives": critic.get("redo_directives") or [],
+            "structural_weaknesses": critic.get("structural_weaknesses") or [],
+            "field_utility_audit": critic.get("field_utility_audit") or {},
+            "patch_operations": operations,
+        }
+    )
+
+
+def _previous_schema_for_revision(args, revision):
+    history_dir = schema_history_dir_from_args(args)
+    candidates = []
+    paths = history_dir.glob("revision_*.json") if history_dir.exists() else []
+    for path in paths:
+        match = re.match(r"revision_(\d{6})(?:_[0-9a-f]+)?\.json$", path.name)
+        if match and int(match.group(1)) < revision:
+            candidates.append((int(match.group(1)), path))
+    if not candidates:
+        return None, None
+    previous_revision, previous_path = max(candidates, key=lambda item: item[0])
+    try:
+        payload = json.loads(previous_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    return previous_revision, payload.get("schema")
+
+
+def append_schema_iteration_record(state, current_node, next_node=None):
+    if current_node not in SCHEMA_ITERATION_NODES:
+        return state
+    snapshot = deepcopy(state)
+    args = dict_to_namespace(snapshot["args"])
+    schema = (snapshot.get("module_outputs") or {}).get("schema_design_module") or {}
+    revision = int(snapshot.get("schema_revision", 0) or 0)
+    current_fields = _schema_field_map(schema)
+    previous_revision, previous_schema = _previous_schema_for_revision(args, revision)
+    previous_fields = _schema_field_map(previous_schema)
+    added_paths = sorted(set(current_fields) - set(previous_fields)) if previous_schema else []
+    removed_paths = sorted(set(previous_fields) - set(current_fields)) if previous_schema else []
+    updated_paths = []
+    if previous_schema:
+        for path in sorted(set(current_fields) & set(previous_fields)):
+            if _schema_digest({"field_registry": [current_fields[path]]}) != _schema_digest(
+                {"field_registry": [previous_fields[path]]}
+            ):
+                updated_paths.append(path)
+
+    record = {
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "schema_revision": revision,
+        "schema_sha256": _schema_digest(schema) if schema else None,
+        "field_count": len(current_fields),
+        "previous_schema_revision": previous_revision,
+        "current_node": current_node,
+        "next_node": next_node or snapshot.get("next_node"),
+        "status": snapshot.get("status"),
+        "changes": {
+            "added_count": len(added_paths),
+            "removed_count": len(removed_paths),
+            "updated_count": len(updated_paths),
+            "added_paths": added_paths,
+            "removed_paths": removed_paths,
+            "updated_paths": updated_paths,
+        },
+        "critic_review": _critic_iteration_summary(
+            (snapshot.get("module_outputs") or {}).get("specialization_critic_module")
+        )
+        if current_node == "specialization_critic"
+        else None,
+        "supervisor_decision": json_safe_state(snapshot.get("supervisor_decision"))
+        if current_node == "supervisor_router"
+        else None,
+        "validation_errors": json_safe_state(snapshot.get("validation_errors") or []),
+        "repair_instructions": json_safe_state(snapshot.get("repair_instructions") or []),
+    }
+    digest_payload = deepcopy(record)
+    digest_payload.pop("recorded_at", None)
+    record_id = hashlib.sha256(
+        json.dumps(
+            digest_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    record["record_id"] = record_id
+    history = [
+        item
+        for item in deepcopy(snapshot.get("schema_iteration_history") or [])
+        if isinstance(item, dict)
+    ]
+    if any(item.get("record_id") == record_id for item in history):
+        return snapshot
+    history.append(record)
+    snapshot["schema_iteration_history"] = history
+    run_artifact_guard.atomic_write_json(
+        schema_iteration_log_path_from_args(args),
+        {
+            "artifact_type": "step8_schema_iteration_history",
+            "run_identity": json_safe_state(snapshot.get("run_identity")),
+            "entries": history,
+        },
+        run_identity=snapshot.get("run_identity"),
+    )
+    return snapshot
+
+
+def build_schema_iteration_context(state):
+    history = [
+        item
+        for item in state.get("schema_iteration_history") or []
+        if isinstance(item, dict)
+    ]
+    if not history:
+        return ""
+    milestone_ids = {
+        item.get("record_id")
+        for item in history
+        if int(item.get("schema_revision", 0) or 0) > 0
+        and int(item.get("schema_revision", 0) or 0) % 10 == 0
+    }
+    selected = [item for item in history if item.get("record_id") in milestone_ids]
+    selected.extend(history[-12:])
+    unique = []
+    seen = set()
+    for item in selected:
+        record_id = item.get("record_id")
+        if record_id in seen:
+            continue
+        seen.add(record_id)
+        unique.append(item)
+    return (
+        "SCHEMA_ITERATION_HISTORY (authoritative prior decisions; avoid reversing an earlier "
+        "change unless you explicitly resolve the recorded conflict):\n"
+        + json.dumps(unique, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def write_schema_revision_snapshot(state, current_node, next_node=None):
+    revision = int(state.get("schema_revision", 0) or 0)
+    schema = (state.get("module_outputs") or {}).get("schema_design_module")
+    if revision <= 0 or not isinstance(schema, dict) or not schema.get("field_registry"):
+        return None
+
+    args = dict_to_namespace(state["args"])
+    safe_schema = json_safe_state(schema)
+    schema_digest = hashlib.sha256(
+        json.dumps(
+            safe_schema,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    history_dir = schema_history_dir_from_args(args)
+    target = history_dir / f"revision_{revision:06d}.json"
+    payload = {
+        "artifact_type": "step8_schema_revision",
+        "schema_revision": revision,
+        "parent_schema_revision": revision - 1 if revision > 1 else None,
+        "schema_sha256": schema_digest,
+        "field_count": len(schema.get("field_registry") or []),
+        "current_node": current_node,
+        "next_node": next_node or state.get("next_node"),
+        "critic_reviewed_schema_revision": int(
+            state.get("critic_reviewed_schema_revision", -1) or -1
+        ),
+        "supervisor_decision": json_safe_state(state.get("supervisor_decision")),
+        "run_identity": json_safe_state(state.get("run_identity")),
+        "schema": safe_schema,
+    }
+
+    if target.exists():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if existing.get("schema_sha256") == schema_digest:
+            return target
+        target = history_dir / f"revision_{revision:06d}_{schema_digest[:12]}.json"
+        if target.exists():
+            return target
+
+    run_artifact_guard.atomic_write_json(
+        target,
+        payload,
+        run_identity=state.get("run_identity"),
+    )
+    return target
+
+
+def write_transition_snapshot(state, current_node, next_node=None):
+    args = dict_to_namespace(state["args"])
+    module_name = NODE_MODULE_OUTPUTS.get(current_node)
+    outputs = state.get("module_outputs") or {}
+    attempts = state.get("module_attempts") or {}
+    module_errors = state.get("module_errors") or {}
+    latest_attempt = None
+    if module_name and isinstance(attempts.get(module_name), list) and attempts[module_name]:
+        latest_attempt = attempts[module_name][-1]
+
+    if module_name == "__shared_context__":
+        module_output = json_safe_state(state.get("shared_context"))
+    elif module_name == "__supervisor_decision__":
+        module_output = json_safe_state(state.get("supervisor_decision"))
+    elif module_name == "__human_gate__":
+        module_output = {
+            "human_advice": json_safe_state(state.get("human_advice")),
+            "post_design_human_advice": json_safe_state(
+                state.get("post_design_human_advice")
+            ),
+        }
+    elif module_name == "__result__":
+        module_output = json_safe_state(state.get("result"))
+    elif module_name == "schema_design_module":
+        module_output = None
+    else:
+        module_output = json_safe_state(outputs.get(module_name)) if module_name else None
+
+    payload = {
+        "artifact_type": "step8_transition",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "current_node": current_node,
+        "next_node": next_node or state.get("next_node"),
+        "status": state.get("status"),
+        "schema_revision": int(state.get("schema_revision", 0) or 0),
+        "critic_reviewed_schema_revision": int(
+            state.get("critic_reviewed_schema_revision", -1) or -1
+        ),
+        "module_name": module_name,
+        "module_output": module_output,
+        "schema_history_reference": (
+            f"revision_{int(state.get('schema_revision', 0) or 0):06d}.json"
+            if module_name == "schema_design_module"
+            else None
+        ),
+        "latest_module_attempt": json_safe_state(latest_attempt),
+        "module_errors": json_safe_state(module_errors.get(module_name))
+        if module_name and not module_name.startswith("__")
+        else None,
+        "validation_errors": json_safe_state(state.get("validation_errors") or []),
+        "repair_instructions": json_safe_state(state.get("repair_instructions") or []),
+        "supervisor_decision": json_safe_state(state.get("supervisor_decision")),
+        "blocker_history_length": len(state.get("blocker_history") or []),
+        "latest_blocker": json_safe_state(
+            (state.get("blocker_history") or [None])[-1]
+        ),
+        "human_advice": json_safe_state(state.get("human_advice")),
+        "post_design_human_advice": json_safe_state(
+            state.get("post_design_human_advice")
+        ),
+        "run_identity": json_safe_state(state.get("run_identity")),
+    }
+    digest_payload = deepcopy(payload)
+    digest_payload.pop("recorded_at", None)
+    event_digest = hashlib.sha256(
+        json.dumps(
+            digest_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    payload["event_sha256"] = event_digest
+    history_dir = event_history_dir_from_args(args)
+    target = history_dir / f"e_{event_digest[:16]}.json"
+    collision_index = 1
+    while target.exists():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if existing.get("event_sha256") == event_digest:
+            return target
+        collision_index += 1
+        target = history_dir / f"e_{event_digest[:16]}_{collision_index}.json"
+    run_artifact_guard.atomic_write_json(
+        target,
+        payload,
+        run_identity=state.get("run_identity"),
+    )
+    return target
+
+
 def write_state_snapshot(state, current_node, next_node=None):
     args = dict_to_namespace(state["args"])
     snapshot = deepcopy(state)
     snapshot["current_node"] = current_node
     if next_node:
         snapshot["next_node"] = next_node
+    snapshot = append_schema_iteration_record(snapshot, current_node, next_node)
     snapshot_path = state_path_from_args(args)
-    tmp_path = snapshot_path.with_suffix(snapshot_path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(json_safe_state(snapshot), ensure_ascii=False), encoding="utf-8")
-    tmp_path.replace(snapshot_path)
+    write_schema_revision_snapshot(snapshot, current_node, next_node)
+    write_transition_snapshot(snapshot, current_node, next_node)
+    run_artifact_guard.atomic_write_json(
+        snapshot_path,
+        json_safe_state(snapshot),
+        run_identity=state.get("run_identity"),
+    )
     return snapshot
 
 
 def load_state_snapshot(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def build_shared_context_from_args(args_dict):
+    args = dict_to_namespace(args_dict)
+    base_query_requirements = section_agent.load_query_requirements(args.query_requirements)
+    key_description_text = section_agent.load_key_description_text(
+        args.key_description_path
+    )
+    reference_field_contract = section_agent.build_reference_field_contract(
+        key_description_text,
+        args.key_description_path,
+    )
+    reference_papers = list(args.reference_papers or [])
+    reference_paper_context = section_agent.load_reference_paper_context(
+        reference_papers
+    )
+    human_advice = args.human_advice or section_agent.load_optional_text(
+        args.human_advice_path
+    )
+    care_queries = section_agent.explicit_human_advice_counterfactual_queries(
+        human_advice
+    )
+    query_requirements = list(base_query_requirements)
+    care_requirement_records = []
+    for care_query in care_queries:
+        distinctions = ", ".join(care_query.get("required_distinctions") or [])
+        requirement_text = str(care_query["query"])
+        if distinctions:
+            requirement_text += f" Required distinctions: {distinctions}."
+        query_requirements.append(requirement_text)
+        care_requirement_records.append(
+            {
+                **care_query,
+                "requirement_id": f"query_{len(query_requirements)}",
+                "requirement_text": requirement_text,
+            }
+        )
+    shared_context = {
+        "task_contract": dict(section_agent.MATERIAL_LITERATURE_TASK_CONTRACT),
+        "database_goal": args.database_goal,
+        "discipline": args.discipline,
+        "query_requirements": query_requirements,
+        "base_query_requirement_count": len(base_query_requirements),
+        "care_counterfactual_enabled": bool(care_requirement_records),
+        "care_counterfactual_queries": care_requirement_records,
+        "care_counterfactual_requirement_ids": [
+            item["requirement_id"] for item in care_requirement_records
+        ],
+        "key_description_text": key_description_text,
+        "reference_field_contract": reference_field_contract,
+        "reference_paper_context": reference_paper_context,
+        "reference_paper_count": len(reference_papers),
+        "human_advice": human_advice,
+        "human_advice_available_before_design": bool(
+            str(human_advice or "").strip()
+        ),
+        "structured_protocol_enabled": bool(
+            getattr(args, "structured_protocol", False)
+        ),
+        "structured_concept_seeding_only": bool(
+            getattr(args, "structured_protocol", False)
+        ),
+        "shared_context_block": build_shared_context_block(
+            args.database_goal,
+            args.discipline,
+            query_requirements,
+            key_description_text,
+            reference_paper_context,
+        ),
+    }
+    attach_to_context(shared_context, getattr(args, "domain_knowledge_pack", ""))
+    return shared_context, human_advice
 
 
 def migrate_legacy_modular_checkpoint(snapshot, cli_args):
@@ -146,23 +631,7 @@ def migrate_legacy_modular_checkpoint(snapshot, cli_args):
     if not args.get("reference_papers"):
         args["reference_papers"] = list(inputs.get("reference_papers") or [])
 
-    query_requirements = section_agent.load_query_requirements(args.get("query_requirements"))
-    key_description_text = section_agent.load_key_description_text(args.get("key_description_path"))
-    reference_papers = list(args.get("reference_papers") or [])
-    reference_paper_context = section_agent.load_reference_paper_context(reference_papers)
-    human_advice = str(args.get("human_advice") or "").strip()
-    if not human_advice and args.get("human_advice_path"):
-        human_advice = section_agent.load_optional_text(args.get("human_advice_path"))
-    shared_context = {
-        "database_goal": args.get("database_goal", ""),
-        "discipline": args.get("discipline", ""),
-        "query_requirements": query_requirements,
-        "key_description_text": key_description_text,
-        "reference_paper_context": reference_paper_context,
-        "reference_paper_count": len(reference_papers),
-        "human_advice": human_advice,
-        "human_advice_available_before_design": bool(human_advice),
-    }
+    shared_context, human_advice = build_shared_context_from_args(args)
     args["human_advice"] = human_advice
     args["human_advice_path"] = ""
     return {
@@ -178,6 +647,10 @@ def migrate_legacy_modular_checkpoint(snapshot, cli_args):
         "force_deterministic_schema_compilation": True,
         "retry_counts": {},
         "repair_instructions": [],
+        "schema_revision": 0,
+        "critic_reviewed_schema_revision": -1,
+        "blocker_history": [],
+        "rejected_critic_patch_hashes": [],
     }
 
 
@@ -193,8 +666,20 @@ def write_human_gate_context(state):
         "reference_papers": args.reference_papers,
         "reference_paper_context_preview": shared.get("reference_paper_context", "")[:4000],
         "available_context": {
+            "task_contract": {
+                "database_goal": shared.get("database_goal"),
+                "discipline": shared.get("discipline"),
+                "query_requirements": shared.get("query_requirements") or [],
+                "reference_paper_count": shared.get("reference_paper_count"),
+            },
             "section_partition_module": outputs.get("section_partition_module"),
             "field_planning_module": outputs.get("field_planning_module"),
+            "schema_design_module": outputs.get("schema_design_module"),
+            "specialization_critic_module": outputs.get("specialization_critic_module"),
+            "aggregation": outputs.get("aggregation"),
+            "supervisor_decision": state.get("supervisor_decision"),
+            "schema_revision": state.get("schema_revision", 0),
+            "schema_iteration_history": state.get("schema_iteration_history") or [],
         },
         "required_advice": (
             "Review the internally accepted field design as a materials-domain expert. "
@@ -203,9 +688,10 @@ def write_human_gate_context(state):
         ),
     }
     context_path = human_gate_context_path_from_args(args)
-    context_path.write_text(
-        json.dumps(json_safe_state(context), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    run_artifact_guard.atomic_write_json(
+        context_path,
+        json_safe_state(context),
+        run_identity=state.get("run_identity"),
     )
     return str(context_path), context
 
@@ -267,8 +753,135 @@ def supervisor_next_node(state):
     return decision.get("next_node", "write_output")
 
 
+def schema_inspection_summary(state, start_revision, end_revision):
+    entries = [
+        item
+        for item in state.get("schema_iteration_history") or []
+        if isinstance(item, dict)
+        and start_revision < int(item.get("schema_revision", 0) or 0) <= end_revision
+    ]
+    critic_entries = [item for item in entries if item.get("critic_review")]
+    redesign_count = sum(
+        bool((item.get("critic_review") or {}).get("redo_needed"))
+        or bool((item.get("critic_review") or {}).get("is_generic"))
+        for item in critic_entries
+    )
+    patch_rejections = sum(
+        any(
+            str(error).startswith("schema_patch_")
+            for error in item.get("validation_errors") or []
+        )
+        for item in entries
+    )
+    blocker_counts = {}
+    for item in entries:
+        decision = item.get("supervisor_decision") or {}
+        fingerprint = str(decision.get("blocker_fingerprint") or "")
+        if fingerprint:
+            blocker_counts[fingerprint] = blocker_counts.get(fingerprint, 0) + 1
+    max_churn_ratio = 0.0
+    for item in entries:
+        changes = item.get("changes") or {}
+        field_count = max(int(item.get("field_count", 0) or 0), 1)
+        churn = int(changes.get("added_count", 0) or 0) + int(
+            changes.get("removed_count", 0) or 0
+        )
+        max_churn_ratio = max(max_churn_ratio, churn / field_count)
+    critic_count = len(critic_entries)
+    return {
+        "revision_window": [start_revision + 1, end_revision],
+        "critic_reviews": critic_count,
+        "critic_redesign_count": redesign_count,
+        "critic_redesign_rate": redesign_count / critic_count if critic_count else 0.0,
+        "schema_patch_rejection_events": patch_rejections,
+        "maximum_repeated_blocker_count": max(blocker_counts.values(), default=0),
+        "maximum_schema_churn_ratio": round(max_churn_ratio, 6),
+        "strictness_review_required": bool(
+            critic_count
+            and (
+                redesign_count == critic_count
+                or patch_rejections >= max(2, critic_count // 2)
+            )
+        ),
+        "inspection_requirements": [
+            "check field-count and path churn for oscillation",
+            "check whether prior critic advice was reversed without resolution",
+            "check internal task-contract capability regressions",
+            "check critic rejection rate, repeated patches, and rule conflicts",
+            "check whether critic or supervisor acceptance rules are too strict",
+        ],
+    }
+
+
 def resume_router_node(state):
+    decision = state.get("supervisor_decision") or {}
+    inspection_revision = int(decision.get("inspection_revision", 0) or 0)
+    approved_through = int(state.get("schema_inspection_approved_through", 0) or 0)
+    if (
+        decision.get("action") == "schema_inspection_required"
+        and approved_through >= inspection_revision
+    ):
+        errors = list(
+            state.get("validation_errors") or state.get("repair_instructions") or []
+        )
+        boundary_errors = [
+            error
+            for error in errors
+            if str(error).startswith("schema_inspection_boundary_reached:")
+        ]
+        repair_errors = [error for error in errors if error not in boundary_errors]
+        repair_target = (
+            state.get("schema_inspection_resume_node") if boundary_errors else None
+        ) or coverage_repair_target(repair_errors)
+        if not repair_target:
+            repair_target = (
+                "schema_design_repair"
+                if state.get("module_outputs", {}).get("schema_design_module")
+                else state.get("last_error_node") or "supervisor_router"
+            )
+        resumed_decision = {
+            "action": "schema_inspection_approved",
+            "reason": (
+                f"schema revisions through {inspection_revision} were inspected; "
+                "continue under the next periodic inspection boundary"
+            ),
+            "inspection_revision": inspection_revision,
+            "next_node": repair_target,
+        }
+        return merge_update(
+            state,
+            {
+                "next_node": repair_target,
+                "status": "running",
+                "validation_errors": [],
+                "repair_instructions": repair_errors,
+                "supervisor_decision": resumed_decision,
+                "schema_inspection_resume_node": "",
+            },
+        )
     repair_target = coverage_repair_target(state.get("repair_instructions") or [])
+    if (
+        repair_target == "subjective_supervisor"
+        and state.get("last_error_node") == "aggregation"
+        and state.get("module_outputs", {}).get("field_planning_module")
+    ):
+        repaired = compile_schema_from_field_planning(
+            state,
+            "resume-time deterministic contract repair after aggregation coverage failure",
+        )
+        repaired = clear_downstream_outputs(
+            repaired,
+            ["specialization_critic_module", "aggregation"],
+        )
+        return merge_update(
+            repaired,
+            {
+                "validation_errors": [],
+                "repair_instructions": [],
+                "status": "running",
+                "next_node": "specialization_critic",
+            },
+        )
     if (
         repair_target
         and state.get("last_error_node") == "aggregation"
@@ -290,28 +903,7 @@ def prepare_state(state):
     if state.get("shared_context"):
         return write_state_snapshot(state, "prepare", "locating")
 
-    args = dict_to_namespace(state["args"])
-    query_requirements = section_agent.load_query_requirements(args.query_requirements)
-    key_description_text = section_agent.load_key_description_text(args.key_description_path)
-    reference_paper_context = section_agent.load_reference_paper_context(args.reference_papers)
-    human_advice = args.human_advice or section_agent.load_optional_text(args.human_advice_path)
-    shared_context = {
-        "database_goal": args.database_goal,
-        "discipline": args.discipline,
-        "query_requirements": query_requirements,
-        "key_description_text": key_description_text,
-        "reference_paper_context": reference_paper_context,
-        "reference_paper_count": len(args.reference_papers or []),
-        "human_advice": human_advice,
-        "human_advice_available_before_design": bool(str(human_advice or "").strip()),
-        "shared_context_block": build_shared_context_block(
-            args.database_goal,
-            args.discipline,
-            query_requirements,
-            key_description_text,
-            reference_paper_context,
-        ),
-    }
+    shared_context, human_advice = build_shared_context_from_args(state["args"])
     update = {
         "shared_context": shared_context,
         "module_outputs": {},
@@ -321,6 +913,13 @@ def prepare_state(state):
         "human_advice": human_advice,
         "status": "running",
         "retry_counts": {},
+        "schema_revision": 0,
+        "critic_reviewed_schema_revision": -1,
+        "blocker_history": [],
+        "rejected_critic_patch_hashes": [],
+        "schema_iteration_history": [],
+        "schema_inspection_approved_through": 0,
+        "schema_inspection_resume_node": "",
     }
     next_state = merge_update(state, update)
     return write_state_snapshot(next_state, "prepare", "locating")
@@ -328,6 +927,15 @@ def prepare_state(state):
 
 def call_module_node(state, module_name, prompt, current_node, next_node):
     args = dict_to_namespace(state["args"])
+    if module_name in {
+        "field_planning_module",
+        "schema_design_module",
+        "specialization_critic_module",
+        "aggregation",
+    }:
+        iteration_context = build_schema_iteration_context(state)
+        if iteration_context:
+            prompt = f"{prompt}\n\n{iteration_context}"
     client = section_agent.get_client(
         base_url=args.base_url,
         api_key=args.api_key,
@@ -342,17 +950,32 @@ def call_module_node(state, module_name, prompt, current_node, next_node):
         temperature=args.temperature,
         max_retries=args.max_retries,
     )
+    if module_name == "schema_design_module" and not errors and isinstance(result, dict):
+        result = canonicalize_schema_definition(result)
     outputs = deepcopy(state.get("module_outputs", {}))
     module_attempts = deepcopy(state.get("module_attempts", {}))
     module_errors = deepcopy(state.get("module_errors", {}))
     outputs[module_name] = result
-    module_attempts[module_name] = attempts
+    prior_attempts = list(module_attempts.get(module_name) or [])
+    round_offset = max(
+        [int(item.get("round", 0) or 0) for item in prior_attempts if isinstance(item, dict)],
+        default=0,
+    )
+    appended_attempts = []
+    for index, attempt in enumerate(attempts or [], start=1):
+        item = deepcopy(attempt) if isinstance(attempt, dict) else {"raw_response": attempt}
+        item["round"] = round_offset + index
+        appended_attempts.append(item)
+    module_attempts[module_name] = [*prior_attempts, *appended_attempts]
     module_errors[module_name] = errors
     update = {
         "module_outputs": outputs,
         "module_attempts": module_attempts,
         "module_errors": module_errors,
     }
+    if module_name == "schema_design_module" and not errors and isinstance(result, dict):
+        update["schema_revision"] = int(state.get("schema_revision", 0) or 0) + 1
+        update["critic_reviewed_schema_revision"] = -1
     if errors:
         error_type = classify_errors(errors)
         update["validation_errors"] = errors
@@ -363,32 +986,178 @@ def call_module_node(state, module_name, prompt, current_node, next_node):
     return write_state_snapshot(merge_update(state, update), current_node, next_node)
 
 
+STOP_AFTER_MODULE_BY_NODE = {
+    "locating": "locating_module",
+    "mechanism": "mechanism_requirement_module",
+    "query_semantics": "query_semantics_module",
+    "evidence_model": "evidence_model_module",
+    "subjective_supervisor": "subjective_supervisor_module",
+    "topic_adaptation": "topic_adaptation_module",
+    "section_partition": "section_partition_module",
+    "field_planning": "field_planning_module",
+    "supervisor": "supervisor_module",
+    "figure_classification": "figure_classification_module",
+    "schema_design": "schema_design_module",
+    "schema_design_repair": "schema_design_module",
+    "specialization_critic": "specialization_critic_module",
+    "aggregation": "aggregation",
+}
+
+
+def requested_stop_after_module(state):
+    args = state.get("args", {})
+    requested = args.get("stop_after_module", "") if isinstance(args, dict) else ""
+    completed = STOP_AFTER_MODULE_BY_NODE.get(state.get("current_node", ""), "")
+    return bool(requested and completed and requested == completed)
+
+
 def stop_if_errors(state, next_node):
     if state.get("validation_errors"):
         return "supervisor_router"
+    if requested_stop_after_module(state):
+        return "write_output"
     return next_node
+
+
+def pause_for_schema_inspection_if_due(state, resume_node):
+    """Gate immediately after a successful schema revision reaches a boundary."""
+    args = state.get("args") or {}
+    interval = int(args.get("schema_inspection_interval", 10) or 10)
+    if interval <= 0:
+        return state
+    revision = int(state.get("schema_revision", 0) or 0)
+    approved_through = int(state.get("schema_inspection_approved_through", 0) or 0)
+    boundary = ((approved_through // interval) + 1) * interval
+    if revision < boundary:
+        return state
+    return merge_update(
+        state,
+        {
+            "validation_errors": [f"schema_inspection_boundary_reached:{boundary}"],
+            "repair_instructions": [],
+            "status": "awaiting_supervisor_decision",
+            "last_error_node": "schema_inspection",
+            "last_error_type": "schema_inspection_boundary",
+            "schema_inspection_resume_node": resume_node,
+            "next_node": "supervisor_router",
+        },
+    )
 
 
 def coverage_repair_target(errors):
     messages = [str(error) for error in errors or []]
+    if any(
+        message.startswith("schema_patch_contract_regression:")
+        for message in messages
+    ):
+        return "specialization_critic"
     if any(message.startswith("coverage:missing_entity_owners:") for message in messages):
         return "subjective_supervisor"
     if any(message.startswith("coverage:missing_concepts:") for message in messages):
+        return "schema_design_repair"
+    if any(
+        message.startswith("coverage:untraced_care_counterfactuals:")
+        for message in messages
+    ):
+        return "query_semantics"
+    if any(
+        message.startswith((
+            "coverage:unresolved_reference_fields:",
+            "coverage:invalid_reference_decisions:",
+        ))
+        for message in messages
+    ):
         return "field_planning"
     if any(
-        message.startswith(prefix)
+        message.startswith((
+            "coverage:unmapped_domain_fields:",
+            "coverage:invalid_concept_references:",
+        ))
         for message in messages
-        for prefix in (
+    ):
+        return "specialization_critic"
+    if any(
+        message.startswith((
             "coverage:incomplete_object_contracts:",
             "coverage:missing_evidence_contracts:",
-            "coverage:unmapped_domain_fields:",
             "coverage:untraced_query_requirements:",
-        )
+            "coverage:missing_reference_fields:",
+            "coverage:redundant_fields:",
+            "coverage:missing_field_utility_reasons:",
+        ))
+        for message in messages
     ):
-        return "schema_design"
+        return "schema_design_repair"
     if any("figure_constraint" in message or message.startswith("coverage:figure_") for message in messages):
         return "figure_classification"
     return None
+
+
+def critic_patch_hash(operations):
+    payload = json.dumps(
+        operations or [],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def has_current_revision_critic_patch(state, error_node, error_type):
+    if error_node != "schema_design" or error_type != "schema_validation_failure":
+        return False
+    critic = (state.get("module_outputs") or {}).get("specialization_critic_module") or {}
+    operations = critic.get("patch_operations") or []
+    if not isinstance(operations, list) or not operations:
+        return False
+    try:
+        reviewed_revision = int(critic.get("reviewed_schema_revision"))
+        schema_revision = int(state.get("schema_revision", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if reviewed_revision != schema_revision:
+        return False
+    return critic_patch_hash(operations) not in set(
+        state.get("rejected_critic_patch_hashes") or []
+    )
+
+
+def validate_current_revision_critic_patch(state):
+    critic = (state.get("module_outputs") or {}).get("specialization_critic_module") or {}
+    operations = critic.get("patch_operations") or []
+    if not isinstance(operations, list) or not operations:
+        return "", []
+    try:
+        reviewed_revision = int(critic.get("reviewed_schema_revision"))
+        schema_revision = int(state.get("schema_revision", 0) or 0)
+    except (TypeError, ValueError):
+        return "", []
+    if reviewed_revision != schema_revision:
+        return "", []
+    patch_hash = critic_patch_hash(operations)
+    schema = deepcopy(
+        (state.get("module_outputs") or {}).get("schema_design_module") or {}
+    )
+    _normalized, errors = validate_schema_patch_operations(schema, operations, state)
+    return patch_hash, errors
+
+
+def blocker_fingerprint(error_node, error_type, errors):
+    normalized = [
+        re.sub(r"\s+", " ", str(error or "").strip().lower())
+        for error in errors or []
+        if str(error or "").strip()
+    ]
+    payload = json.dumps(
+        {
+            "error_node": str(error_node or ""),
+            "error_type": str(error_type or ""),
+            "errors": sorted(set(normalized)),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def supervisor_router_node(state):
@@ -409,19 +1178,141 @@ def supervisor_router_node(state):
     error_node = state.get("last_error_node") or state.get("current_node") or ""
     error_type = state.get("last_error_type") or classify_errors(errors)
     retry_counts = deepcopy(state.get("retry_counts", {}))
-    retry_count = int(retry_counts.get(error_node, 0))
     args = dict_to_namespace(state["args"])
     max_supervisor_retries = int(getattr(args, "max_supervisor_retries", 1) or 1)
+    max_total_repairs = int(getattr(args, "max_total_supervisor_repairs", 12) or 12)
+    schema_inspection_interval = int(
+        getattr(args, "schema_inspection_interval", 10) or 10
+    )
+    repeated_blocker_inspection_threshold = int(
+        getattr(args, "repeated_blocker_inspection_threshold", 3) or 3
+    )
+    approved_through = int(state.get("schema_inspection_approved_through", 0) or 0)
+    inspection_boundary = (
+        (approved_through // schema_inspection_interval) + 1
+    ) * schema_inspection_interval
+    fingerprint = blocker_fingerprint(error_node, error_type, errors)
+    repeated_blocker_count = 1 + sum(
+        1
+        for item in state.get("blocker_history") or []
+        if isinstance(item, dict) and item.get("fingerprint") == fingerprint
+    )
+    retry_key = f"{error_node}:{error_type}:{fingerprint}"
+    retry_count = int(retry_counts.get(retry_key, 0))
+    total_repairs = sum(int(value or 0) for value in retry_counts.values())
     repair_target = coverage_repair_target(errors)
+    current_critic_patch_pending = has_current_revision_critic_patch(
+        state,
+        error_node,
+        error_type,
+    )
+    current_critic_patch_hash = ""
+    current_critic_patch_errors = []
+    if current_critic_patch_pending:
+        current_critic_patch_hash, current_critic_patch_errors = (
+            validate_current_revision_critic_patch(state)
+        )
 
-    if repair_target and retry_count < max_supervisor_retries:
-        retry_counts[error_node] = retry_count + 1
+    if int(state.get("schema_revision", 0) or 0) >= inspection_boundary:
+        decision = {
+            "action": "schema_inspection_required",
+            "reason": (
+                "periodic schema inspection boundary reached; pause automatic iteration "
+                "and inspect convergence and critic strictness before continuing"
+            ),
+            "error_node": error_node,
+            "error_type": error_type,
+            "blocker_fingerprint": fingerprint,
+            "retry_count": retry_count,
+            "schema_revision": int(state.get("schema_revision", 0) or 0),
+            "inspection_revision": inspection_boundary,
+            "schema_inspection_interval": schema_inspection_interval,
+            "inspection_summary": schema_inspection_summary(
+                state,
+                max(0, inspection_boundary - schema_inspection_interval),
+                inspection_boundary,
+            ),
+            "next_node": "write_output",
+        }
+    elif repeated_blocker_count >= repeated_blocker_inspection_threshold:
+        decision = {
+            "action": "repeated_blocker_inspection_required",
+            "reason": (
+                "the same blocker repeated without a schema-version transition; pause "
+                "to inspect protocol correctness, rule conflicts, and critic strictness"
+            ),
+            "error_node": error_node,
+            "error_type": error_type,
+            "blocker_fingerprint": fingerprint,
+            "repeated_blocker_count": repeated_blocker_count,
+            "repeated_blocker_inspection_threshold": repeated_blocker_inspection_threshold,
+            "schema_revision": int(state.get("schema_revision", 0) or 0),
+            "inspection_summary": {
+                "strictness_review_required": True,
+                "errors": list(errors),
+                "inspection_requirements": [
+                    "check whether the blocker is caused by protocol or path normalization",
+                    "check whether critic and supervisor rules conflict",
+                    "check whether critic or supervisor acceptance rules are too strict",
+                    "check whether the same rejected patch or advice is being replayed",
+                ],
+            },
+            "next_node": "write_output",
+        }
+    elif total_repairs >= max_total_repairs:
+        decision = {
+            "action": "finish_needs_review",
+            "reason": "total supervisor repair budget exhausted",
+            "error_node": error_node,
+            "error_type": error_type,
+            "blocker_fingerprint": fingerprint,
+            "retry_count": retry_count,
+            "next_node": "write_output",
+        }
+    elif (
+        current_critic_patch_pending
+        and current_critic_patch_errors
+        and retry_count < max_supervisor_retries
+    ):
+        retry_counts[retry_key] = retry_count + 1
+        decision = {
+            "action": "retry_critic_patch",
+            "reason": (
+                "The current-revision critic patch failed deterministic protocol "
+                "validation; return the exact errors to the critic instead of replaying "
+                "the rejected patch."
+            ),
+            "error_node": "specialization_critic",
+            "error_type": "schema_validation_failure",
+            "blocker_fingerprint": fingerprint,
+            "critic_patch_hash": current_critic_patch_hash,
+            "critic_patch_errors": list(current_critic_patch_errors),
+            "retry_count": retry_counts[retry_key],
+            "next_node": "specialization_critic",
+        }
+    elif current_critic_patch_pending and retry_count < max_supervisor_retries:
+        retry_counts[retry_key] = retry_count + 1
+        decision = {
+            "action": "repair_schema_design",
+            "reason": (
+                "The specialization critic supplied a structured patch bound to the "
+                "current schema revision; apply it before rerunning any upstream module."
+            ),
+            "error_node": error_node,
+            "error_type": error_type,
+            "blocker_fingerprint": fingerprint,
+            "retry_count": retry_counts[retry_key],
+            "next_node": "schema_design_repair",
+        }
+    elif repair_target and retry_count < max_supervisor_retries:
+        retry_counts[retry_key] = retry_count + 1
         decision = {
             "action": "repair_coverage",
             "reason": "Deterministic coverage validation selected the owning upstream module.",
             "error_node": error_node,
             "error_type": error_type,
-            "retry_count": retry_counts[error_node],
+            "blocker_fingerprint": fingerprint,
+            "retry_count": retry_counts[retry_key],
             "next_node": repair_target,
         }
     elif (
@@ -429,13 +1320,14 @@ def supervisor_router_node(state):
         and error_type in {"json_parse_failure", "schema_validation_failure", "module_failure"}
         and retry_count < max_supervisor_retries
     ):
-        retry_counts[error_node] = retry_count + 1
+        retry_counts[retry_key] = retry_count + 1
         decision = {
             "action": "repair_schema_design",
             "reason": "schema_design failed or critic requested redesign; retry with compact repair prompt.",
             "error_node": error_node,
             "error_type": error_type,
-            "retry_count": retry_counts[error_node],
+            "blocker_fingerprint": fingerprint,
+            "retry_count": retry_counts[retry_key],
             "next_node": "schema_design_repair",
         }
     elif retry_count < max_supervisor_retries and error_node in {
@@ -454,13 +1346,14 @@ def supervisor_router_node(state):
         "specialization_critic",
         "aggregation",
     }:
-        retry_counts[error_node] = retry_count + 1
+        retry_counts[retry_key] = retry_count + 1
         decision = {
             "action": "retry_node",
             "reason": "module failed once; supervisor allows one generic retry.",
             "error_node": error_node,
             "error_type": error_type,
-            "retry_count": retry_counts[error_node],
+            "blocker_fingerprint": fingerprint,
+            "retry_count": retry_counts[retry_key],
             "next_node": error_node,
         }
     else:
@@ -469,17 +1362,39 @@ def supervisor_router_node(state):
             "reason": "supervisor retry budget exhausted or no safe route available.",
             "error_node": error_node,
             "error_type": error_type,
+            "blocker_fingerprint": fingerprint,
             "retry_count": retry_count,
             "next_node": "write_output",
         }
 
+    blocker_history = deepcopy(state.get("blocker_history") or [])
+    blocker_history.append(
+        {
+            "fingerprint": fingerprint,
+            "error_node": error_node,
+            "error_type": error_type,
+            "errors": list(errors),
+            "decision": decision.get("action"),
+            "retry_count": decision.get("retry_count", retry_count),
+        }
+    )
     update = {
         "supervisor_decision": decision,
         "retry_counts": retry_counts,
+        "blocker_history": blocker_history,
         "status": "running" if decision["next_node"] != "write_output" else "needs_review",
     }
+    if decision.get("action") == "retry_critic_patch" and current_critic_patch_hash:
+        rejected_hashes = list(state.get("rejected_critic_patch_hashes") or [])
+        if current_critic_patch_hash not in rejected_hashes:
+            rejected_hashes.append(current_critic_patch_hash)
+        update["rejected_critic_patch_hashes"] = rejected_hashes
     if decision["next_node"] != "write_output":
-        update["repair_instructions"] = errors
+        update["repair_instructions"] = (
+            [f"schema_patch_rejected:{item}" for item in current_critic_patch_errors]
+            if decision.get("action") == "retry_critic_patch"
+            else errors
+        )
         update["validation_errors"] = []
     return write_state_snapshot(merge_update(state, update), "supervisor_router", decision["next_node"])
 
@@ -606,6 +1521,23 @@ def advice_is_acceptance(advice):
     text = str(advice or "").strip().lower()
     if not text:
         return False
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = None
+    if isinstance(payload, dict):
+        verdict = str(payload.get("verdict") or payload.get("decision") or "").strip().lower()
+        if verdict in {"accept", "accepted", "approve", "approved", "pass", "passed"}:
+            return True
+        if verdict in {
+            "reject",
+            "rejected",
+            "revise",
+            "revision_required",
+            "needs_revision",
+            "need_review",
+        }:
+            return False
     reject_tokens = [
         "not acceptable",
         "needs revision",
@@ -645,7 +1577,21 @@ def advice_is_acceptance(advice):
 
 def human_advice_gate_node(state):
     args = dict_to_namespace(state["args"])
-    human_advice = (state.get("human_advice") or "").strip()
+    shared_at_entry = state.get("shared_context") or {}
+    initial_advice = (state.get("human_advice") or "").strip()
+    post_design_advice = (state.get("post_design_human_advice") or "").strip()
+    advice_was_seeded_before_design = bool(
+        shared_at_entry.get("human_advice_available_before_design")
+    )
+    human_advice = (
+        post_design_advice
+        if advice_was_seeded_before_design
+        else initial_advice
+    )
+    completed_review_round = int(
+        state.get("human_review_round")
+        or (1 if advice_was_seeded_before_design and initial_advice else 0)
+    )
     if getattr(args, "skip_human_expert_review", False) and not human_advice:
         outputs = deepcopy(state.get("module_outputs", {}))
         outputs["human_advice_gate"] = {
@@ -657,6 +1603,30 @@ def human_advice_gate_node(state):
             merge_update(state, {"module_outputs": outputs}),
             "human_advice_gate",
             "write_output",
+        )
+    if not human_advice and completed_review_round >= 3:
+        outputs = deepcopy(state.get("module_outputs", {}))
+        outputs["human_advice_gate"] = {
+            "status": "maximum_rounds_exhausted",
+            "maximum_rounds": 3,
+            "reason": "Three blind expert-review rounds completed without acceptance.",
+        }
+        return write_state_snapshot(
+            merge_update(
+                state,
+                {
+                    "module_outputs": outputs,
+                    "status": "awaiting_supervisor_decision",
+                    "validation_errors": [
+                        "blind human expert review exhausted the maximum of three rounds"
+                    ],
+                    "last_error_node": "human_advice_gate",
+                    "last_error_type": "expert_review_failure",
+                    "next_node": "supervisor_router",
+                },
+            ),
+            "human_advice_gate",
+            "supervisor_router",
         )
     if not human_advice:
         context_path, context = write_human_gate_context(state)
@@ -694,20 +1664,21 @@ def human_advice_gate_node(state):
     shared["human_advice"] = str(human_advice).strip()
     outputs = deepcopy(state.get("module_outputs", {}))
     current_advice = shared["human_advice"]
-    previously_applied_advice = str(state.get("applied_human_advice") or "").strip()
-    current_advice_already_applied = bool(
-        current_advice
-        and (
-            shared.get("human_advice_available_before_design")
-            or (state.get("human_review_applied") and current_advice == previously_applied_advice)
-        )
-    )
-    if current_advice_already_applied or advice_is_acceptance(current_advice):
+    review_round = completed_review_round + 1
+    try:
+        parsed_advice = json.loads(current_advice)
+        declared_round = int(parsed_advice.get("round") or 0)
+        if declared_round:
+            review_round = declared_round
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    review_round = min(max(review_round, 1), 3)
+    if advice_is_acceptance(current_advice):
         outputs["human_advice_gate"] = {
             "status": "accepted",
             "position": "before_requirement_contract" if shared.get("human_advice_available_before_design") else "after_internal_field_design_pass",
             "human_advice": current_advice,
-            "reason": "Human expert review accepted the internally passing field design, or the same advice was already applied.",
+            "reason": "Human expert review explicitly accepted the internally passing field design.",
         }
         return write_state_snapshot(
             merge_update(
@@ -717,6 +1688,8 @@ def human_advice_gate_node(state):
                     "module_outputs": outputs,
                     "status": "success",
                     "validation_errors": [],
+                    "human_review_round": review_round,
+                    "post_design_human_advice": "",
                 },
             ),
             "human_advice_gate",
@@ -743,6 +1716,8 @@ def human_advice_gate_node(state):
         ],
         "repair_instructions": [current_advice],
         "applied_human_advice": current_advice,
+        "human_review_round": review_round,
+        "post_design_human_advice": "",
         "retry_counts": retry_counts,
         "status": "awaiting_supervisor_decision",
         "last_error_node": "schema_design",
@@ -811,7 +1786,8 @@ def schema_design_node(state):
         update["validation_errors"] = []
         update["status"] = "running"
         update["next_node"] = "specialization_critic"
-        return write_state_snapshot(update, "schema_design", "specialization_critic")
+        update = pause_for_schema_inspection_if_due(update, "specialization_critic")
+        return write_state_snapshot(update, "schema_design", update["next_node"])
 
     outputs = state["module_outputs"]
     update = call_module_node(
@@ -841,6 +1817,7 @@ def schema_design_node(state):
         update["validation_errors"] = []
         update["status"] = "running"
         update["next_node"] = "specialization_critic"
+        update = pause_for_schema_inspection_if_due(update, "specialization_critic")
     return write_state_snapshot(update, "schema_design", update.get("next_node", "specialization_critic"))
 
 
@@ -849,7 +1826,7 @@ def build_schema_repair_prompt(state):
     attempts = state.get("module_attempts", {}).get("schema_design_module", [])
     previous_raw = ""
     if attempts:
-        previous_raw = str(attempts[-1].get("raw_response") or "")[-12000:]
+        previous_raw = str(attempts[-1].get("raw_response") or "")[-500000:]
     errors = (
         state.get("repair_instructions")
         or state.get("validation_errors")
@@ -871,7 +1848,7 @@ Supervisor repair instruction:
 - Return one complete valid JSON object only.
 - Do not use markdown fences.
 - Keep the output compact enough to avoid truncation.
-- Prefer 80-140 high-value field_registry entries when validation asks for child-level coverage.
+- Do not use a numeric field-count target. Preserve every justified task/reference leaf, but reject speculative fields, aliases represented as separate fields, deterministic duplicates, and fields without requirement/evidence traceability.
 - If the failed schema contains roots that are absent from the approved section architecture,
   field_planning_module, and supervisor-approved extension owners, discard the entire schema.
   Do not incrementally patch it. Rebuild from field_planning_module and the six-section materials backbone.
@@ -920,30 +1897,29 @@ Return valid JSON only using this shape:
 """.strip()
 
 
+AXIS_PAIR_SEGMENT_PATTERN = re.compile(
+    r"(?:^|\.)([a-z][a-z0-9]{0,2})_([a-z][a-z0-9]{0,2})(?:\.|$)",
+    re.IGNORECASE,
+)
+
+
+def has_axis_pair_segment(value):
+    return bool(AXIS_PAIR_SEGMENT_PATTERN.search(str(value or "")))
+
+
 def section_for_repair_parent(parent, source_text):
-    parent_text = parent.lower()
-    if any(
-        token in parent_text
-        for token in (
-            "transition",
-            "hysteresis",
-            "moment",
-            "anisotropy",
-            "magnetocaloric",
-            "soft_magnet",
-            "permanent_magnet",
-            "performance",
-        )
-    ):
-        return "material_info.section1"
     text = f"{parent} {source_text}".lower()
     if "section1" in text:
         return "material_info.section1"
     if "section2" in text or "synthesis" in text or "anneal" in text or "process" in text:
         return "material_info.section2"
-    if "section3" in text or "characterization" in text:
+    if "section3" in text or any(
+        token in text for token in ("characterization", "microscopy", "spectroscopy", "diffraction")
+    ):
         return "material_info.section3"
-    if "section4" in text or "curve" in text or parent.lower() in {"m_t", "m_h", "chi_t", "specific_heat", "r_t"}:
+    if "section4" in text or any(
+        token in text for token in ("curve", "plot", "map", "series", "response")
+    ) or has_axis_pair_segment(parent):
         return "material_info.section4"
     if "theory" in text or "simulation" in text:
         return "section5"
@@ -997,6 +1973,7 @@ def add_repair_field(registry, existing_paths, field_path, section_id, field_nam
 MATERIAL_TOP_LEVEL_KEYS = [
     {"key": "paper_info", "description": "Bibliographic metadata, abstract, source links, and paper-level resources."},
     {"key": "primary_signature", "description": "Canonical identifier for the primary material system or interface."},
+    {"key": "primary_signature_normalized", "description": "Normalized primary material-system identifier used for matching."},
     {"key": "material_info", "description": "Six-section material record covering identity, properties, processing, evidence, and curves."},
     {"key": "section5", "description": "Paper-level theory and mechanism interpretation kept separate from experimental values."},
 ]
@@ -1013,8 +1990,8 @@ DEFAULT_SCHEMA_ROOTS = {
     "sample_id_aliases",
 }
 
-PREFERRED_FIELD_REGISTRY_SIZE = 160
-HARD_FIELD_REGISTRY_SIZE = 220
+PREFERRED_FIELD_REGISTRY_SIZE = None
+HARD_FIELD_REGISTRY_SIZE = None
 
 
 def field_path_depth(field_path):
@@ -1022,7 +1999,7 @@ def field_path_depth(field_path):
 
 
 def compact_field_registry(registry, preferred_size=PREFERRED_FIELD_REGISTRY_SIZE, hard_size=HARD_FIELD_REGISTRY_SIZE):
-    """Keep Step8 schemas at database-design granularity, not leaf-field explosion."""
+    """Deduplicate malformed paths without silently truncating valid schema fields."""
     bad_segments = {"e", "g", "eg", "e.g", "etc", "example", "examples"}
     deduped = []
     seen = set()
@@ -1038,8 +2015,10 @@ def compact_field_registry(registry, preferred_size=PREFERRED_FIELD_REGISTRY_SIZ
         seen.add(field_path)
         deduped.append(item)
 
-    if len(deduped) <= hard_size:
+    if hard_size is None or len(deduped) <= hard_size:
         return deduped
+
+    preferred_size = min(preferred_size or hard_size, hard_size)
 
     essential_leaf_names = {
         "value",
@@ -1181,7 +2160,52 @@ def approved_schema_roots_from_state(state):
                 value = str(item["key"])
                 if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", value):
                     roots.add(value)
+    subjective = (state.get("module_outputs") or {}).get("subjective_supervisor_module") or {}
+    for entity in subjective.get("entity_registry") or []:
+        if isinstance(entity, dict) and section_agent.is_safe_entity_owner_key(entity.get("owner_key")):
+            roots.add(str(entity["owner_key"]))
+    human_advice = (
+        state.get("human_advice")
+        or (state.get("shared_context") or {}).get("human_advice")
+        or ""
+    )
+    for concept in section_agent.explicit_human_advice_schema_concepts(human_advice):
+        if section_agent.is_safe_entity_owner_key(concept.get("owner_key")):
+            roots.add(str(concept["owner_key"]))
     return roots
+
+
+def synchronize_top_level_keys(schema):
+    """Declare exactly the owners represented by field_registry."""
+    schema = deepcopy(schema or {})
+    registry = [item for item in schema.get("field_registry") or [] if isinstance(item, dict)]
+    roots = {
+        str(item.get("field_path") or "").split(".", 1)[0]
+        for item in registry
+        if str(item.get("field_path") or "").strip()
+    }
+    existing_descriptions = {
+        str(item.get("key")): str(item.get("description") or "")
+        for item in schema.get("top_level_keys") or []
+        if isinstance(item, dict) and item.get("key")
+    }
+    canonical_descriptions = {
+        item["key"]: item["description"] for item in MATERIAL_TOP_LEVEL_KEYS
+    }
+    ordered_roots = [
+        item["key"] for item in MATERIAL_TOP_LEVEL_KEYS if item["key"] in roots
+    ]
+    ordered_roots.extend(sorted(roots - set(ordered_roots)))
+    schema["top_level_keys"] = [
+        {
+            "key": root,
+            "description": existing_descriptions.get(root)
+            or canonical_descriptions.get(root)
+            or f"Task-approved owner for {root} records.",
+        }
+        for root in ordered_roots
+    ]
+    return schema
 
 
 def schema_has_unapproved_roots(schema, state=None):
@@ -1191,6 +2215,7 @@ def schema_has_unapproved_roots(schema, state=None):
 
 def infer_section_from_field_path(field_path, fallback_section_id="material_info.section1"):
     field_path = str(field_path)
+    root = field_path.split(".", 1)[0]
     for prefix, section_id in SECTION_HINTS.items():
         if field_path == prefix or field_path.startswith(f"{prefix}."):
             return section_id
@@ -1200,10 +2225,15 @@ def infer_section_from_field_path(field_path, fallback_section_id="material_info
         return "material_info.section2"
     if any(token in field_path.lower() for token in ["xrd", "afm", "sem", "tem", "stm", "sts", "arpes", "xas", "xmcd", "microscopy", "characterization"]):
         return "material_info.section3"
-    if any(token in field_path.lower() for token in ["curve", "r_t", "m_t", "m_h", "chi_t", "hall", "mr", "iv", "specific_heat"]):
+    if any(
+        token in field_path.lower()
+        for token in ("curve", "plot", "map", "series", "response")
+    ) or has_axis_pair_segment(field_path):
         return "material_info.section4"
     if any(token in field_path.lower() for token in ["theory", "mechanism", "calculated", "simulation", "model"]):
         return "section5"
+    if section_agent.is_safe_entity_owner_key(root):
+        return root
     return fallback_section_id
 
 
@@ -1214,6 +2244,13 @@ def canonicalize_rebuild_field_path(field_path, fallback_section_id):
         "material_info.section1.core_parameter.",
         "material_info.section1.core_parameters.",
     )
+    if field_path.startswith("material_info.section5."):
+        field_path = "section5." + field_path[len("material_info.section5.") :]
+    fallback_section_id = str(fallback_section_id or "material_info.section1")
+    if re.fullmatch(r"section[0-4]", fallback_section_id):
+        fallback_section_id = f"material_info.{fallback_section_id}"
+    elif fallback_section_id == "material_info.section5":
+        fallback_section_id = "section5"
     root = field_path.split(".", 1)[0]
     allowed_roots = {
         "paper_info",
@@ -1226,7 +2263,7 @@ def canonicalize_rebuild_field_path(field_path, fallback_section_id):
         "formula_aliases",
         "sample_id_aliases",
     }
-    if root in allowed_roots:
+    if root in allowed_roots or section_agent.is_safe_entity_owner_key(root):
         return field_path
     if str(fallback_section_id).startswith("material_info."):
         return f"{fallback_section_id}.{field_path}"
@@ -1237,16 +2274,42 @@ def canonicalize_rebuild_field_path(field_path, fallback_section_id):
     return field_path
 
 
-def infer_data_type_from_field_path(field_path):
+def canonicalize_schema_definition(schema):
+    """Normalize schema field paths before critics or patch operations consume them."""
+    schema = deepcopy(schema or {})
+    normalized_registry = []
+    for raw_field in schema.get("field_registry") or []:
+        if not isinstance(raw_field, dict):
+            continue
+        field = deepcopy(raw_field)
+        section_id = section_agent.canonical_section_id(field.get("section_id"))
+        field_path = canonicalize_rebuild_field_path(
+            field.get("field_path") or "",
+            section_id or "material_info.section1",
+        )
+        field["field_path"] = field_path
+        if field_path.startswith("section5."):
+            section_id = "section5"
+        field["section_id"] = section_id or infer_section_from_field_path(field_path)
+        normalized_registry.append(field)
+    schema["field_registry"] = compact_field_registry(normalized_registry)
+    return synchronize_top_level_keys(schema)
+
+
+def infer_data_type_from_field_path(field_path, planned_path=""):
     leaf = str(field_path).rsplit(".", 1)[-1].lower()
     if leaf in {"value", "raw_value", "uncertainty", "confidence_score", "year"}:
         return "number"
     if leaf in {"required", "available", "raw_data"} or leaf.endswith("_flag"):
         return "boolean"
-    if leaf.endswith("s") or leaf in {"authors", "keywords", "aliases", "evidence_links", "supporting_methods"}:
-        return "array"
     if leaf in {"conditions", "metadata", "resources", "figure_constraint", "normalization_aliases"}:
         return "object"
+    if (
+        str(planned_path).strip().endswith("[]")
+        or leaf.endswith(("_refs", "_ids"))
+        or leaf in {"authors", "keywords", "aliases", "evidence_links", "supporting_methods"}
+    ):
+        return "array"
     return "string"
 
 
@@ -1255,7 +2318,7 @@ def infer_source_basis_from_field_path(field_path, evidence_strategy=""):
     basis = ["text"]
     if "source_table" in text or text.endswith(".table"):
         basis.append("table")
-    if any(
+    if has_axis_pair_segment(text) or any(
         token in text
         for token in [
             "figure",
@@ -1290,10 +2353,12 @@ def infer_rebuild_figure_constraint(field_path, section_id, source_basis):
     elif section_id == "material_info.section4":
         category = "property_curve"
     elif section_id == "material_info.section1":
-        category = "property_curve"
+        category = "domain_relevant_figure"
     elif section_id == "section5":
         category = "domain_relevant_figure"
-    elif any(token in lowered for token in ["curve", "r_t", "m_t", "m_h", "chi_t", "hall", "mr", "iv"]):
+    elif any(
+        token in lowered for token in ("curve", "plot", "map", "series", "response")
+    ) or has_axis_pair_segment(lowered):
         category = "property_curve"
     elif any(token in lowered for token in ["xrd", "afm", "sem", "tem", "stm", "arpes", "spectrum", "microscopy"]):
         category = "characterization_figure"
@@ -1307,24 +2372,29 @@ def infer_rebuild_figure_constraint(field_path, section_id, source_basis):
     }
 
 
-DETERMINISTIC_SCHEMA_COMPILATION_THRESHOLD = 100
+# Routing threshold only: large plans are compiled in batches to avoid response
+# truncation. It is not a minimum, maximum, or target schema size.
+DETERMINISTIC_SCHEMA_COMPILATION_ROUTING_THRESHOLD = 100
 
 
 def planned_field_count(state):
-    groups = (
-        ((state.get("module_outputs") or {}).get("field_planning_module") or {}).get("field_groups")
-        or []
-    )
-    return sum(
+    field_plan = ((state.get("module_outputs") or {}).get("field_planning_module") or {})
+    groups = field_plan.get("field_groups") or []
+    grouped_count = sum(
         len(group.get("recommended_fields") or [])
         for group in groups
         if isinstance(group, dict)
     )
+    audit = field_plan.get("reference_field_audit") or {}
+    audited_count = len(audit.get("included_leaf_paths") or []) + len(
+        audit.get("adapted_leaf_mappings") or []
+    )
+    return max(grouped_count, audited_count)
 
 
 def should_compile_schema_deterministically(state):
     return bool(state.get("force_deterministic_schema_compilation")) or (
-        planned_field_count(state) >= DETERMINISTIC_SCHEMA_COMPILATION_THRESHOLD
+        planned_field_count(state) >= DETERMINISTIC_SCHEMA_COMPILATION_ROUTING_THRESHOLD
     )
 
 
@@ -1349,11 +2419,12 @@ def concept_match_score(concept, field_path):
 def object_contract_for_kind(object_kind):
     object_kind = str(object_kind or "measurement").strip().lower()
     required = {
-        "measurement": ["value", "conditions", "entity_ref", "source_type", "evidence", "confidence"],
-        "classification": ["label", "assignment_basis", "source_type", "evidence", "confidence"],
+        "measurement": ["value", "conditions", "entity_ref", "source_type", "evidence", "extraction_confidence"],
+        "classification": ["label", "assignment_basis", "source_type", "evidence", "extraction_confidence"],
         "entity_descriptor": ["identity", "evidence"],
         "process": ["method", "conditions", "entity_ref", "evidence"],
         "evidence_collection": ["evidence"],
+        "freeform_object": [],
     }
     if object_kind not in required:
         object_kind = "measurement"
@@ -1380,8 +2451,39 @@ def infer_object_kind(field_path, concepts):
     return "measurement"
 
 
+def merge_structured_object_contract(custom_contract, field_path, concepts):
+    custom_contract = deepcopy(custom_contract) if isinstance(custom_contract, dict) else {}
+    object_kind = str(custom_contract.get("object_kind") or "").strip().lower()
+    if not object_kind:
+        object_kind = infer_object_kind(field_path, concepts)
+    base_contract = object_contract_for_kind(object_kind)
+    required_subfields = list(
+        dict.fromkeys(
+            [
+                *base_contract.get("required_subfields", []),
+                *custom_contract.get("required_subfields", []),
+            ]
+        )
+    )
+    fields = deepcopy(custom_contract.get("fields")) if isinstance(custom_contract.get("fields"), dict) else {}
+    for slot in base_contract.get("required_subfields", []):
+        fields.setdefault(slot, "required_semantic_slot")
+    return {
+        **custom_contract,
+        "object_kind": base_contract["object_kind"],
+        "required_subfields": required_subfields,
+        "fields": fields,
+    }
+
+
 def concept_owner_prefix(concept):
     owner = str(concept.get("owner_key") or "material_info")
+    if (
+        owner not in DEFAULT_SCHEMA_ROOTS
+        and owner not in SUPERVISOR_EXTENSION_ROOTS
+        and not section_agent.is_safe_entity_owner_key(owner)
+    ):
+        owner = "material_info"
     if owner != "material_info":
         return owner
     object_kind = str(concept.get("object_kind") or "scalar").lower()
@@ -1405,7 +2507,35 @@ def compile_schema_from_field_planning(state, reason):
     requirement_contract = section_agent.normalize_requirement_contract(shared, subjective)
     concepts = requirement_contract.get("concepts") or []
     entities = section_agent.normalize_entity_registry(subjective, requirement_contract)
-    field_groups = (outputs.get("field_planning_module") or {}).get("field_groups") or []
+    field_plan = outputs.get("field_planning_module") or {}
+    field_groups = field_plan.get("field_groups") or []
+    declared_entity_roots = {
+        str(entity.get("owner_key") or "")
+        for entity in entities
+        if section_agent.is_safe_entity_owner_key(entity.get("owner_key"))
+    }
+    reference_contract = shared.get("reference_field_contract") or {}
+    reference_index = {
+        section_agent.normalize_reference_field_path(item.get("path")): item
+        for item in reference_contract.get("leaf_fields", []) or []
+        if isinstance(item, dict) and item.get("path")
+    }
+    reference_audit = section_agent.normalize_reference_field_audit(
+        reference_contract,
+        field_plan.get("reference_field_audit"),
+        field_groups,
+    )
+    reference_target_specs = {}
+    for source_path in reference_audit.get("included_leaf_paths") or []:
+        normalized_source = section_agent.normalize_reference_field_path(source_path)
+        reference_target_specs[normalized_source] = reference_index.get(normalized_source)
+    for mapping in reference_audit.get("adapted_leaf_mappings") or []:
+        if not isinstance(mapping, dict):
+            continue
+        normalized_source = section_agent.normalize_reference_field_path(mapping.get("source_path"))
+        normalized_target = section_agent.normalize_reference_field_path(mapping.get("target_path"))
+        if normalized_target:
+            reference_target_specs[normalized_target] = reference_index.get(normalized_source)
     registry = []
     existing_paths = set()
 
@@ -1422,34 +2552,123 @@ def compile_schema_from_field_planning(state, reason):
                 continue
             field_path = canonicalize_rebuild_field_path(raw_path, fallback_section_id)
             root = field_path.split(".", 1)[0]
-            if root not in DEFAULT_SCHEMA_ROOTS and root not in SUPERVISOR_EXTENSION_ROOTS:
+            if (
+                root not in DEFAULT_SCHEMA_ROOTS
+                and root not in SUPERVISOR_EXTENSION_ROOTS
+                and root not in declared_entity_roots
+            ):
                 continue
             if field_path in existing_paths:
                 continue
             match_context = f"{field_path} {group_context}"
             matches = [concept for concept in concepts if concept_match_score(concept, match_context) > 0]
-            data_type = infer_data_type_from_field_path(field_path)
-            if any(str(concept.get("object_kind") or "scalar").lower() != "scalar" for concept in matches):
-                data_type = "array of objects"
+            field_name = field_path.rsplit(".", 1)[-1]
+            exact_matches = [
+                concept
+                for concept in matches
+                if str(concept.get("concept_id") or "") == field_name
+            ]
+            if exact_matches:
+                matches = exact_matches
+            reference_spec = reference_target_specs.get(
+                section_agent.normalize_reference_field_path(field_path)
+            ) or reference_index.get(section_agent.normalize_reference_field_path(field_path))
+            data_type = str((reference_spec or {}).get("data_type") or "")
+            if not data_type or data_type == "unspecified":
+                data_type = infer_data_type_from_field_path(field_path, raw_path)
+                if exact_matches and any(
+                    concept.get("object_kind") not in {None, "", "scalar"}
+                    for concept in exact_matches
+                ):
+                    data_type = "array of objects" if raw_path.strip().endswith("[]") else "object"
+            custom_object_contract = next(
+                (
+                    deepcopy(concept.get("object_contract"))
+                    for concept in matches
+                    if isinstance(concept.get("object_contract"), dict)
+                ),
+                None,
+            )
             field = {
                 "field_path": field_path,
                 "section_id": infer_section_from_field_path(field_path, fallback_section_id),
                 "field_name": field_path.rsplit(".", 1)[-1],
+                "description": str((reference_spec or {}).get("description_hint") or group.get("purpose") or ""),
+                "extraction_notes": str(
+                    (reference_spec or {}).get("extraction_notes")
+                    or (
+                        f"Extract only explicit {field_path.rsplit('.', 1)[-1]} evidence for the target "
+                        "material, sample, or entity named in the same evidence span. Keep distinct "
+                        "methods, conditions, units, and source locations separate; do not infer or "
+                        "merge values across samples, figures, tables, or calculation provenance."
+                    )
+                ),
                 "data_type": data_type,
                 "required": False,
                 "source_basis": infer_source_basis_from_field_path(field_path, evidence_strategy),
                 "concept_ids": [concept["concept_id"] for concept in matches],
                 "figure_constraint": None,
                 "reason": f"Compiled from field_planning_module because {reason}",
+                "field_plan_trace": {
+                    "recommended_field": raw_path,
+                    "canonical_field_path": field_path,
+                    "section_id": section_agent.canonical_section_id(
+                        fallback_section_id
+                    ),
+                },
             }
             field["figure_constraint"] = infer_rebuild_figure_constraint(
                 field_path, field["section_id"], field["source_basis"]
             )
-            if "object" in data_type:
-                object_kind = infer_object_kind(field_path, matches)
+            if custom_object_contract and "object" in data_type.lower():
+                field["object_contract"] = merge_structured_object_contract(
+                    custom_object_contract,
+                    field_path,
+                    matches,
+                )
+            elif "object" in data_type:
+                object_kind = (
+                    "freeform_object"
+                    if reference_spec and data_type.strip().lower() == "object"
+                    else infer_object_kind(field_path, matches)
+                )
                 field["object_contract"] = object_contract_for_kind(object_kind)
             registry.append(field)
             existing_paths.add(field_path)
+
+    for raw_path, reference_spec in reference_target_specs.items():
+        field_path = canonicalize_rebuild_field_path(raw_path, infer_section_from_field_path(raw_path))
+        if field_path in existing_paths:
+            continue
+        matches = [concept for concept in concepts if concept_match_score(concept, field_path) > 0]
+        data_type = str((reference_spec or {}).get("data_type") or "")
+        if not data_type or data_type == "unspecified":
+            data_type = infer_data_type_from_field_path(field_path)
+        field = {
+            "field_path": field_path,
+            "section_id": infer_section_from_field_path(field_path),
+            "field_name": field_path.rsplit(".", 1)[-1],
+            "description": str((reference_spec or {}).get("description_hint") or ""),
+            "extraction_notes": str((reference_spec or {}).get("extraction_notes") or ""),
+            "data_type": data_type,
+            "required": False,
+            "source_basis": infer_source_basis_from_field_path(field_path),
+            "concept_ids": [concept["concept_id"] for concept in matches],
+            "figure_constraint": infer_rebuild_figure_constraint(
+                field_path,
+                infer_section_from_field_path(field_path),
+                infer_source_basis_from_field_path(field_path),
+            ),
+            "reason": "Selected by the task-adaptive reference field audit.",
+        }
+        if "object" in data_type.lower():
+            field["object_contract"] = object_contract_for_kind(
+                "freeform_object"
+                if reference_spec and data_type.strip().lower() == "object"
+                else infer_object_kind(field_path, matches)
+            )
+        registry.append(field)
+        existing_paths.add(field_path)
 
     mapped = {
         concept_id
@@ -1465,11 +2684,15 @@ def compile_schema_from_field_planning(state, reason):
         if field_path in existing_paths:
             continue
         object_kind = str(concept.get("object_kind") or "scalar").lower()
-        data_type = "array of objects" if object_kind != "scalar" else "string"
+        data_type = str(concept.get("data_type") or "").strip()
+        if not data_type:
+            data_type = "array of objects" if object_kind != "scalar" else "string"
         field = {
             "field_path": field_path,
             "section_id": infer_section_from_field_path(field_path),
             "field_name": concept_id,
+            "description": str(concept.get("definition") or concept.get("label") or concept_id),
+            "extraction_notes": "Extract only when explicitly supported and bind the value to the correct target entity, sample, conditions, and evidence source.",
             "data_type": data_type,
             "required": bool(concept.get("required")),
             "source_basis": list(concept.get("evidence_types") or ["text"]),
@@ -1482,8 +2705,8 @@ def compile_schema_from_field_planning(state, reason):
         registry.append(field)
         existing_paths.add(field_path)
 
-    top_level_keys = deepcopy(MATERIAL_TOP_LEVEL_KEYS)
-    top_level_names = {item["key"] for item in top_level_keys}
+    top_level_keys = []
+    top_level_names = set()
     for entity in entities:
         owner = str(entity.get("owner_key") or "").strip()
         if not owner or owner in top_level_names:
@@ -1515,7 +2738,10 @@ def compile_schema_from_field_planning(state, reason):
                 }
             )
 
-    schema = {"top_level_keys": top_level_keys, "field_registry": registry}
+    schema = synchronize_top_level_keys(
+        {"top_level_keys": top_level_keys, "field_registry": registry}
+    )
+    schema["field_registry"] = apply_definitions(schema["field_registry"], outputs.get("field_planning_module") or {})
     outputs["schema_design_module"] = schema
     module_attempts = deepcopy(state.get("module_attempts", {}))
     module_attempts["schema_design_module"] = [
@@ -1534,13 +2760,38 @@ def compile_schema_from_field_planning(state, reason):
             "module_outputs": outputs,
             "module_attempts": module_attempts,
             "module_errors": module_errors,
+            "schema_revision": int(state.get("schema_revision", 0) or 0) + 1,
+            "critic_reviewed_schema_revision": -1,
         },
     )
 
 
 def rebuild_material_schema_from_field_planning(state, reason):
     outputs = deepcopy(state.get("module_outputs", {}))
-    field_groups = (outputs.get("field_planning_module") or {}).get("field_groups") or []
+    field_plan = outputs.get("field_planning_module") or {}
+    field_groups = field_plan.get("field_groups") or []
+    reference_contract = (state.get("shared_context") or {}).get("reference_field_contract") or {}
+    reference_index = {
+        section_agent.normalize_reference_field_path(item.get("path")): item
+        for item in reference_contract.get("leaf_fields", []) or []
+        if isinstance(item, dict) and item.get("path")
+    }
+    reference_audit = section_agent.normalize_reference_field_audit(
+        reference_contract,
+        field_plan.get("reference_field_audit"),
+        field_groups,
+    )
+    reference_target_specs = {}
+    for source_path in reference_audit.get("included_leaf_paths") or []:
+        normalized_source = section_agent.normalize_reference_field_path(source_path)
+        reference_target_specs[normalized_source] = reference_index.get(normalized_source)
+    for mapping in reference_audit.get("adapted_leaf_mappings") or []:
+        if not isinstance(mapping, dict):
+            continue
+        normalized_source = section_agent.normalize_reference_field_path(mapping.get("source_path"))
+        normalized_target = section_agent.normalize_reference_field_path(mapping.get("target_path"))
+        if normalized_target:
+            reference_target_specs[normalized_target] = reference_index.get(normalized_source)
     registry = []
     existing_paths = set()
 
@@ -1549,10 +2800,10 @@ def rebuild_material_schema_from_field_planning(state, reason):
             continue
         fallback_section_id = str(group.get("section_id") or "material_info.section1")
         evidence_strategy = str(group.get("evidence_strategy") or "")
-        for field_path in group.get("recommended_fields") or []:
-            if not isinstance(field_path, str) or not field_path.strip():
+        for raw_path in group.get("recommended_fields") or []:
+            if not isinstance(raw_path, str) or not raw_path.strip():
                 continue
-            field_path = canonicalize_rebuild_field_path(field_path, fallback_section_id)
+            field_path = canonicalize_rebuild_field_path(raw_path, fallback_section_id)
             root = field_path.split(".", 1)[0]
             if root not in DEFAULT_SCHEMA_ROOTS and root not in SUPERVISOR_EXTENSION_ROOTS:
                 continue
@@ -1560,80 +2811,74 @@ def rebuild_material_schema_from_field_planning(state, reason):
                 continue
             section_id = infer_section_from_field_path(field_path, fallback_section_id)
             source_basis = infer_source_basis_from_field_path(field_path, evidence_strategy)
-            registry.append(
-                {
-                    "field_path": field_path,
-                    "section_id": section_id,
-                    "field_name": field_path.rsplit(".", 1)[-1],
-                    "data_type": infer_data_type_from_field_path(field_path),
-                    "required": field_path in {
-                        "paper_info.metadata.title",
-                        "paper_info.metadata.doi",
-                        "paper_info.metadata.abstract",
-                        "primary_signature",
-                        "primary_signature_normalized",
-                        "material_info.section0.primary_material_identity",
-                    },
-                    "source_basis": source_basis,
-                    "figure_constraint": infer_rebuild_figure_constraint(field_path, section_id, source_basis),
-                    "reason": f"Rebuilt from field_planning_module because {reason}",
-                }
-            )
-            existing_paths.add(field_path)
-
-    minimum_fields = [
-        ("paper_info.metadata.title", "paper_info"),
-        ("paper_info.metadata.doi", "paper_info"),
-        ("paper_info.metadata.abstract", "paper_info"),
-        ("paper_info.metadata.url", "paper_info"),
-        ("paper_info.resources.raw_data", "paper_info"),
-        ("primary_signature", "material_info.section0"),
-        ("primary_signature_normalized", "material_info.section0"),
-        ("material_info.section0.primary_material_identity.formula", "material_info.section0"),
-        ("material_info.section0.primary_material_identity.material_name", "material_info.section0"),
-        ("material_info.section1.core_parameter.parameter_name", "material_info.section1"),
-        ("material_info.section1.core_parameter.value", "material_info.section1"),
-        ("material_info.section1.core_parameter.unit", "material_info.section1"),
-        ("material_info.section1.core_parameter.conditions", "material_info.section1"),
-        ("material_info.section1.core_parameter.source_reference", "material_info.section1"),
-        ("material_info.section2.fabrication_entries.method", "material_info.section2"),
-        ("material_info.section2.fabrication_entries.conditions", "material_info.section2"),
-        ("material_info.section3.characterization_evidence.technique", "material_info.section3"),
-        ("material_info.section3.characterization_evidence.figure", "material_info.section3"),
-        ("material_info.section4.property_curves.curve_type", "material_info.section4"),
-        ("material_info.section4.property_curves.figure", "material_info.section4"),
-        ("section5.theory_mechanism_core.mechanism_type", "section5"),
-        ("section5.theory_mechanism_core.evidence_links", "section5"),
-    ]
-    skip_if_prefix_exists = {
-        "material_info.section1.core_parameter.": "material_info.section1.core_parameters",
-        "material_info.section3.characterization_evidence.": "material_info.section3.",
-        "material_info.section4.property_curves.": "material_info.section4.",
-    }
-    for field_path, section_id in minimum_fields:
-        if field_path in existing_paths:
-            continue
-        if any(field_path.startswith(prefix) and any(path.startswith(existing_prefix) for path in existing_paths) for prefix, existing_prefix in skip_if_prefix_exists.items()):
-            continue
-        source_basis = infer_source_basis_from_field_path(field_path)
-        registry.append(
-            {
+            normalized_path = section_agent.normalize_reference_field_path(field_path)
+            reference_spec = reference_target_specs.get(normalized_path) or reference_index.get(normalized_path)
+            data_type = str((reference_spec or {}).get("data_type") or "")
+            if not data_type or data_type == "unspecified":
+                data_type = infer_data_type_from_field_path(field_path, raw_path)
+            field = {
                 "field_path": field_path,
                 "section_id": section_id,
                 "field_name": field_path.rsplit(".", 1)[-1],
-                "data_type": infer_data_type_from_field_path(field_path),
-                "required": field_path in {"paper_info.metadata.title", "paper_info.metadata.doi", "primary_signature"},
+                "description": str((reference_spec or {}).get("description_hint") or group.get("purpose") or ""),
+                "extraction_notes": str((reference_spec or {}).get("extraction_notes") or ""),
+                "data_type": data_type,
+                "required": field_path in {
+                    "paper_info.metadata.title",
+                    "paper_info.metadata.doi",
+                    "paper_info.metadata.abstract",
+                    "primary_signature",
+                    "primary_signature_normalized",
+                    "material_info.section0.primary_material_identity",
+                },
                 "source_basis": source_basis,
                 "figure_constraint": infer_rebuild_figure_constraint(field_path, section_id, source_basis),
-                "reason": f"Safety baseline added during materials schema rebuild because {reason}",
+                "reason": f"Rebuilt from field_planning_module because {reason}",
             }
-        )
+            if "object" in data_type.lower():
+                field["object_contract"] = object_contract_for_kind(
+                    "freeform_object"
+                    if reference_spec and data_type.strip().lower() == "object"
+                    else infer_object_kind(field_path, [])
+                )
+            registry.append(field)
+            existing_paths.add(field_path)
+
+    for raw_path, reference_spec in reference_target_specs.items():
+        field_path = canonicalize_rebuild_field_path(raw_path, infer_section_from_field_path(raw_path))
+        if field_path in existing_paths:
+            continue
+        section_id = infer_section_from_field_path(field_path)
+        source_basis = infer_source_basis_from_field_path(field_path)
+        data_type = str((reference_spec or {}).get("data_type") or "")
+        if not data_type or data_type == "unspecified":
+            data_type = infer_data_type_from_field_path(field_path)
+        field = {
+            "field_path": field_path,
+            "section_id": section_id,
+            "field_name": field_path.rsplit(".", 1)[-1],
+            "description": str((reference_spec or {}).get("description_hint") or ""),
+            "extraction_notes": str((reference_spec or {}).get("extraction_notes") or ""),
+            "data_type": data_type,
+            "required": False,
+            "source_basis": source_basis,
+            "figure_constraint": infer_rebuild_figure_constraint(field_path, section_id, source_basis),
+            "reason": "Selected by the task-adaptive reference field audit during schema rebuild.",
+        }
+        if "object" in data_type.lower():
+            field["object_contract"] = object_contract_for_kind(
+                "freeform_object"
+                if reference_spec and data_type.strip().lower() == "object"
+                else infer_object_kind(field_path, [])
+            )
+        registry.append(field)
         existing_paths.add(field_path)
 
     schema = {
         "top_level_keys": deepcopy(MATERIAL_TOP_LEVEL_KEYS),
         "field_registry": registry,
     }
+    schema["field_registry"] = apply_definitions(schema["field_registry"], outputs.get("field_planning_module") or {})
     outputs["schema_design_module"] = schema
     module_attempts = deepcopy(state.get("module_attempts", {}))
     module_attempts["schema_design_module"] = [
@@ -1666,8 +2911,8 @@ def repair_children_from_text(parent, text):
         "uncertainty",
         "conditions",
         "conditions.temperature",
-        "conditions.magnetic_field.value",
-        "conditions.magnetic_field.direction",
+        "conditions.external_field.value",
+        "conditions.external_field.direction",
         "conditions.pressure",
         "conditions.protocol",
         "conditions.sweep_rate",
@@ -1683,60 +2928,13 @@ def repair_children_from_text(parent, text):
     ]
     keyword_children = {
         "transition": ["type", "criterion"],
-        "hysteresis": [
-            "coercivity.value",
-            "coercivity.unit",
-            "coercivity.temperature",
-            "coercivity.field_direction",
-            "coercivity.source_figure",
-            "remanence.value",
-            "remanence.unit",
-            "remanence.temperature",
-            "remanence.field_direction",
-            "remanence.source_figure",
-            "saturation_magnetization.value",
-            "saturation_magnetization.unit",
-            "saturation_magnetization.temperature",
-            "saturation_magnetization.field_direction",
-            "saturation_magnetization.source_figure",
-            "field_direction",
-            "protocol",
-        ],
-        "moment": ["effective_moment", "saturation_moment", "basis", "method"],
-        "anisotropy": ["constant", "easy_axis", "source_method", "temperature"],
-        "magnetocaloric": [
-            "entropy_change.value",
-            "entropy_change.unit",
-            "refrigerant_capacity.value",
-            "refrigerant_capacity.unit",
-            "adiabatic_temperature_change.value",
-            "adiabatic_temperature_change.unit",
-            "field_change",
-            "peak_temperature",
-            "calculation_method",
-        ],
-        "soft_magnet": [
-            "permeability.value",
-            "permeability.unit",
-            "core_loss.value",
-            "core_loss.unit",
-            "electrical_resistivity.value",
-            "electrical_resistivity.unit",
-            "frequency",
-            "field_amplitude",
-        ],
-        "permanent_magnet": [
-            "maximum_energy_product.value",
-            "maximum_energy_product.unit",
-            "recoil_permeability.value",
-            "recoil_permeability.unit",
-            "knee_field.value",
-            "knee_field.unit",
-            "temperature_coefficient.value",
-            "temperature_coefficient.unit",
-        ],
+        "classification": ["label", "assignment_basis", "supporting_methods"],
+        "process": ["method", "sequence", "inputs", "outputs"],
         "synthesis": ["method", "description", "temperature", "time", "pressure", "atmosphere"],
-        "curve": ["figure", "variable", "x_axis", "y_axis", "temperature", "magnetic_field", "protocol"],
+        "curve": ["figure", "variable", "x_axis", "y_axis", "measurement_conditions", "protocol"],
+        "spectrum": ["figure", "x_axis", "y_axis", "resolution", "measurement_conditions"],
+        "map": ["figure", "x_axis", "y_axis", "color_scale", "measurement_conditions"],
+        "fit": ["function", "parameters", "goodness_of_fit", "confidence_interval"],
     }
     for keyword, extra_children in keyword_children.items():
         if keyword in parent_lower or keyword.replace("_", " ") in parent_lower:
@@ -1750,10 +2948,8 @@ def repair_children_from_text(parent, text):
             "measurement_conditions",
             "sample_identifier",
             "confidence",
-            "core_loss",
-            "maximum_energy_product",
-            "adiabatic_temperature_change",
-            "field_change",
+            "assignment_basis",
+            "supporting_methods",
         }:
             children.append(concept_match)
     return list(dict.fromkeys(children))
@@ -1798,7 +2994,7 @@ def is_repair_parent_candidate(token):
     return "_" in token or any(char.isupper() for char in token) or len(token) <= 24
 
 
-def deterministic_schema_repair(state):
+def _legacy_text_schema_repair(state):
     outputs = deepcopy(state.get("module_outputs", {}))
     schema = deepcopy(outputs.get("schema_design_module") or {})
     unapproved_roots = schema_has_unapproved_roots(schema, state)
@@ -1810,7 +3006,7 @@ def deterministic_schema_repair(state):
             if unapproved_roots
             else "supervisor/critic identified an unrelated schema template"
         )
-        return rebuild_material_schema_from_field_planning(state, reason)
+        return compile_schema_from_field_planning(state, reason)
 
     registry = deepcopy(schema.get("field_registry") or [])
     bad_segments = {"e", "g", "eg", "e.g", "etc", "example", "examples"}
@@ -2016,12 +3212,14 @@ def deterministic_schema_repair(state):
     schema["field_registry"] = registry
     schema.setdefault("schema_quality_notes", []).append(
         {
-            "type": "field_granularity_budget",
+            "type": "field_inventory_preservation",
             "original_field_count": original_count,
             "final_field_count": len(registry),
+            "truncated": len(registry) < original_count,
             "policy": (
-                "Keep database fields at medium granularity similar to the superconductivity pipeline. "
-                "Use parent object fields plus selected essential subfields instead of exhaustive leaf expansion."
+                "Preserve every valid task-derived independently queryable field after path validation and "
+                "deduplication. Field count is evaluated through coverage, utility, redundancy, and binding "
+                "quality rather than an arbitrary fixed-size truncation."
             ),
         }
     )
@@ -2052,9 +3250,550 @@ def deterministic_schema_repair(state):
     )
 
 
+PATCH_CHANGE_KEYS = {
+    "section_id",
+    "field_name",
+    "description",
+    "extraction_notes",
+    "data_type",
+    "required",
+    "source_basis",
+    "concept_ids",
+    "figure_constraint",
+    "object_contract",
+    "reason",
+    "inclusion_rule",
+    "absence_rule",
+    "evidence_requirements",
+    "relation_constraints",
+    "core_field",
+}
+
+PATCH_NESTED_CHANGE_KEYS = {
+    "object_contract.object_kind",
+    "object_contract.required_subfields",
+    "object_contract.fields",
+}
+
+
+def _canonical_patch_path(raw_path, fallback_section_id="material_info.section1"):
+    path = canonicalize_rebuild_field_path(raw_path, fallback_section_id)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*", path):
+        return ""
+    return path
+
+
+def _normalize_patch_field(raw_field, field_path, state, reason):
+    raw_field = deepcopy(raw_field) if isinstance(raw_field, dict) else {}
+    section_id = section_agent.canonical_section_id(
+        raw_field.get("section_id") or infer_section_from_field_path(field_path)
+    )
+    if field_path.startswith("section5."):
+        section_id = "section5"
+    source_basis = raw_field.get("source_basis") or infer_source_basis_from_field_path(field_path)
+    if isinstance(source_basis, str):
+        source_basis = [source_basis]
+    source_basis = list(dict.fromkeys(str(item) for item in source_basis if str(item).strip())) or ["text"]
+    data_type = str(raw_field.get("data_type") or infer_data_type_from_field_path(field_path))
+    field = {
+        "field_path": field_path,
+        "section_id": section_id,
+        "field_name": str(raw_field.get("field_name") or field_path.rsplit(".", 1)[-1]),
+        "description": str(raw_field.get("description") or ""),
+        "extraction_notes": str(
+            raw_field.get("extraction_notes")
+            or "Extract only explicit literature evidence; preserve entity, sample, conditions, units, and source location without cross-record merging."
+        ),
+        "data_type": data_type,
+        "required": bool(raw_field.get("required", False)),
+        "source_basis": source_basis,
+        "concept_ids": list(dict.fromkeys(raw_field.get("concept_ids") or [])),
+        "figure_constraint": raw_field.get("figure_constraint"),
+        "reason": str(raw_field.get("reason") or reason),
+    }
+    for key in (
+        "inclusion_rule",
+        "absence_rule",
+        "evidence_requirements",
+        "relation_constraints",
+        "core_field",
+    ):
+        if key in raw_field:
+            field[key] = deepcopy(raw_field[key])
+    if field["figure_constraint"] is None:
+        field["figure_constraint"] = infer_rebuild_figure_constraint(
+            field_path,
+            section_id,
+            source_basis,
+        )
+    if "object" in data_type.lower():
+        field["object_contract"] = merge_structured_object_contract(
+            raw_field.get("object_contract"),
+            field_path,
+            [],
+        )
+    return field
+
+
+def validate_schema_patch_operations(schema, operations, state):
+    schema = canonicalize_schema_definition(schema)
+    registry = {
+        str(item.get("field_path")): item
+        for item in schema.get("field_registry") or []
+        if isinstance(item, dict) and item.get("field_path")
+    }
+    approved_roots = approved_schema_roots_from_state(state)
+    shared = state.get("shared_context") or {}
+    subjective = (state.get("module_outputs") or {}).get(
+        "subjective_supervisor_module"
+    ) or {}
+    requirement_contract = section_agent.normalize_requirement_contract(
+        shared,
+        subjective,
+    )
+    valid_concept_ids = {
+        str(item.get("concept_id"))
+        for item in requirement_contract.get("concepts", []) or []
+        if isinstance(item, dict) and item.get("concept_id")
+    }
+    errors = []
+    normalized = []
+    simulated_paths = set(registry)
+    for index, raw_operation in enumerate(operations or []):
+        if not isinstance(raw_operation, dict):
+            errors.append(f"patch[{index}] must be an object")
+            continue
+        operation = deepcopy(raw_operation)
+        op = str(operation.get("op") or "").strip().lower()
+        field_path = _canonical_patch_path(
+            operation.get("field_path")
+            or (operation.get("field") or {}).get("field_path")
+        )
+        if op not in {"add_field", "update_field", "remove_field", "move_field"}:
+            errors.append(f"patch[{index}] has unsupported op: {op or '<empty>'}")
+            continue
+        if not field_path:
+            errors.append(f"patch[{index}] has an invalid field_path")
+            continue
+        if field_path.split(".", 1)[0] not in approved_roots:
+            errors.append(f"patch[{index}] uses unapproved root: {field_path}")
+            continue
+        if op == "add_field" and field_path in simulated_paths:
+            errors.append(f"patch[{index}] add_field already exists: {field_path}")
+            continue
+        if op in {"update_field", "remove_field", "move_field"} and field_path not in simulated_paths:
+            errors.append(f"patch[{index}] target does not exist: {field_path}")
+            continue
+        if op == "update_field":
+            changes = operation.get("changes")
+            if not isinstance(changes, dict) or not changes:
+                errors.append(f"patch[{index}] update_field needs non-empty changes")
+                continue
+            unknown = sorted(
+                set(changes) - PATCH_CHANGE_KEYS - PATCH_NESTED_CHANGE_KEYS
+            )
+            if unknown:
+                errors.append(f"patch[{index}] changes unsupported keys: {unknown}")
+                continue
+        concept_ids = []
+        if op == "add_field" and isinstance(operation.get("field"), dict):
+            concept_ids = operation["field"].get("concept_ids", []) or []
+        elif op == "update_field" and isinstance(operation.get("changes"), dict):
+            concept_ids = operation["changes"].get("concept_ids", []) or []
+        invalid_concept_ids = sorted(
+            {
+                str(concept_id)
+                for concept_id in concept_ids
+                if str(concept_id) not in valid_concept_ids
+            }
+        )
+        if invalid_concept_ids:
+            errors.append(
+                f"patch[{index}] concept_ids are not in requirement_contract: "
+                f"{invalid_concept_ids}"
+            )
+            continue
+        if op == "move_field":
+            target_path = _canonical_patch_path(operation.get("target_path"))
+            if not target_path:
+                errors.append(f"patch[{index}] move_field has an invalid target_path")
+                continue
+            if target_path.split(".", 1)[0] not in approved_roots:
+                errors.append(f"patch[{index}] move_field uses unapproved target root: {target_path}")
+                continue
+            if target_path in simulated_paths and target_path != field_path:
+                errors.append(f"patch[{index}] move_field target already exists: {target_path}")
+                continue
+            operation["target_path"] = target_path
+            simulated_paths.remove(field_path)
+            simulated_paths.add(target_path)
+        elif op == "add_field":
+            simulated_paths.add(field_path)
+        elif op == "remove_field":
+            simulated_paths.remove(field_path)
+        operation["field_path"] = field_path
+        normalized.append(operation)
+    return normalized, errors
+
+
+def schema_coverage_report_for_state(schema, state):
+    shared = state.get("shared_context") or {}
+    outputs = state.get("module_outputs") or {}
+    subjective = outputs.get("subjective_supervisor_module") or {}
+    requirement_contract = section_agent.normalize_requirement_contract(shared, subjective)
+    entity_registry = section_agent.normalize_entity_registry(
+        subjective,
+        requirement_contract,
+    )
+    field_plan = outputs.get("field_planning_module") or {}
+    return section_agent.build_coverage_report(
+        {
+            "requirement_contract": requirement_contract,
+            "entity_registry": entity_registry,
+            "schema_definition": schema or {},
+            "reference_field_contract": shared.get("reference_field_contract") or {},
+            "reference_field_audit": field_plan.get("reference_field_audit") or {},
+            "field_plan_traceability": section_agent.build_field_plan_traceability(
+                field_plan
+            ),
+        }
+    )
+
+
+def schema_contract_regressions(before_schema, after_schema, state):
+    """Return losses against the run's own task contract, never external gold."""
+    before = schema_coverage_report_for_state(before_schema, state)
+    after = schema_coverage_report_for_state(after_schema, state)
+    comparisons = {
+        "required_concepts": (
+            before.get("required_concept_coverage", {}).get("missing_concept_ids", []),
+            after.get("required_concept_coverage", {}).get("missing_concept_ids", []),
+        ),
+        "entity_owners": (
+            before.get("entity_owner_coverage", {}).get("missing_entity_ids", []),
+            after.get("entity_owner_coverage", {}).get("missing_entity_ids", []),
+        ),
+        "object_contracts": (
+            before.get("structured_object_completeness", {}).get("incomplete_fields", []),
+            after.get("structured_object_completeness", {}).get("incomplete_fields", []),
+        ),
+        "evidence_contracts": (
+            before.get("evidence_contract_coverage", {}).get("missing_concept_ids", []),
+            after.get("evidence_contract_coverage", {}).get("missing_concept_ids", []),
+        ),
+        "query_requirements": (
+            before.get("query_requirement_traceability", {}).get("missing_requirement_ids", []),
+            after.get("query_requirement_traceability", {}).get("missing_requirement_ids", []),
+        ),
+        "reference_fields": (
+            before.get("reference_field_coverage", {}).get("missing_applicable_paths", []),
+            after.get("reference_field_coverage", {}).get("missing_applicable_paths", []),
+        ),
+    }
+    regressions = []
+    for label, (before_items, after_items) in comparisons.items():
+        newly_missing = sorted(set(map(str, after_items)) - set(map(str, before_items)))
+        if newly_missing:
+            regressions.append(f"{label}:{','.join(newly_missing)}")
+    return regressions
+
+
+def apply_schema_patch_operations(state, operations, source="structured_schema_patch"):
+    outputs = deepcopy(state.get("module_outputs", {}))
+    schema = canonicalize_schema_definition(outputs.get("schema_design_module") or {})
+    normalized, errors = validate_schema_patch_operations(schema, operations, state)
+    if errors:
+        return merge_update(
+            state,
+            {
+                "validation_errors": [f"schema_patch_rejected:{item}" for item in errors],
+                "status": "awaiting_supervisor_decision",
+                "last_error_node": "schema_design",
+                "last_error_type": "schema_validation_failure",
+            },
+        )
+
+    registry = [
+        deepcopy(item)
+        for item in schema.get("field_registry") or []
+        if isinstance(item, dict) and item.get("field_path")
+    ]
+    by_path = {str(item["field_path"]): item for item in registry}
+    applied = []
+    for operation in normalized:
+        op = operation["op"]
+        field_path = operation["field_path"]
+        reason = str(operation.get("reason") or source)
+        if op == "add_field":
+            field = _normalize_patch_field(
+                operation.get("field"),
+                field_path,
+                state,
+                reason,
+            )
+            registry.append(field)
+            by_path[field_path] = field
+        elif op == "update_field":
+            field = by_path[field_path]
+            changes = deepcopy(operation["changes"])
+            for key, value in changes.items():
+                if key in PATCH_NESTED_CHANGE_KEYS:
+                    parent, child = key.split(".", 1)
+                    nested = deepcopy(field.get(parent))
+                    if not isinstance(nested, dict):
+                        nested = {}
+                    nested[child] = value
+                    field[parent] = nested
+                else:
+                    field[key] = value
+            field["field_name"] = str(field.get("field_name") or field_path.rsplit(".", 1)[-1])
+            field["section_id"] = section_agent.canonical_section_id(
+                field.get("section_id") or infer_section_from_field_path(field_path)
+            )
+            if field_path.startswith("section5."):
+                field["section_id"] = "section5"
+            field["reason"] = reason
+            if "object" in str(field.get("data_type") or "").lower():
+                field["object_contract"] = merge_structured_object_contract(
+                    field.get("object_contract"),
+                    field_path,
+                    [],
+                )
+            if "figure" in (field.get("source_basis") or []) and not field.get("figure_constraint"):
+                field["figure_constraint"] = infer_rebuild_figure_constraint(
+                    field_path,
+                    field["section_id"],
+                    field.get("source_basis") or [],
+                )
+        elif op == "remove_field":
+            registry = [item for item in registry if item.get("field_path") != field_path]
+            by_path.pop(field_path, None)
+        elif op == "move_field":
+            target_path = operation["target_path"]
+            field = by_path.pop(field_path)
+            field["field_path"] = target_path
+            field["field_name"] = target_path.rsplit(".", 1)[-1]
+            target_root = target_path.split(".", 1)[0]
+            if target_path == field_path and section_agent.is_safe_entity_owner_key(target_root):
+                field["section_id"] = target_root
+            else:
+                field["section_id"] = infer_section_from_field_path(target_path)
+            field["reason"] = reason
+            by_path[target_path] = field
+        applied.append(
+            {
+                "op": op,
+                "field_path": field_path,
+                "target_path": operation.get("target_path", ""),
+                "reason": reason,
+            }
+        )
+
+    schema["field_registry"] = compact_field_registry(registry)
+    schema = synchronize_top_level_keys(schema)
+    contract_regressions = schema_contract_regressions(
+        outputs.get("schema_design_module") or {},
+        schema,
+        state,
+    )
+    if contract_regressions:
+        rejected_hashes = list(state.get("rejected_critic_patch_hashes") or [])
+        patch_hash = critic_patch_hash(normalized)
+        if patch_hash not in rejected_hashes:
+            rejected_hashes.append(patch_hash)
+        return merge_update(
+            state,
+            {
+                "validation_errors": [
+                    f"schema_patch_contract_regression:{item}"
+                    for item in contract_regressions
+                ],
+                "rejected_critic_patch_hashes": rejected_hashes,
+                "status": "awaiting_supervisor_decision",
+                "last_error_node": "schema_design",
+                "last_error_type": "schema_validation_failure",
+            },
+        )
+    schema.setdefault("schema_patch_audit", []).append(
+        {
+            "source": source,
+            "base_schema_revision": int(state.get("schema_revision", 0) or 0),
+            "applied_operations": applied,
+        }
+    )
+    outputs["schema_design_module"] = schema
+    attempts = deepcopy(state.get("module_attempts", {}))
+    prior = list(attempts.get("schema_design_module") or [])
+    attempts["schema_design_module"] = [
+        *prior,
+        {
+            "round": len(prior) + 1,
+            "prompt": source,
+            "raw_response": json.dumps(
+                {"patch_operations": normalized, "schema": schema},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    module_errors = deepcopy(state.get("module_errors", {}))
+    module_errors["schema_design_module"] = []
+    return merge_update(
+        state,
+        {
+            "module_outputs": outputs,
+            "module_attempts": attempts,
+            "module_errors": module_errors,
+            "schema_revision": int(state.get("schema_revision", 0) or 0) + 1,
+            "critic_reviewed_schema_revision": -1,
+            "validation_errors": [],
+        },
+    )
+
+
+def _error_field_paths(error, prefix):
+    text = str(error)
+    if not text.startswith(prefix):
+        return []
+    payload = text[len(prefix) :]
+    return list(
+        dict.fromkeys(
+            re.findall(
+                r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+",
+                payload,
+            )
+        )
+    )
+
+
+def structured_patch_operations_from_errors(state):
+    outputs = state.get("module_outputs") or {}
+    schema = outputs.get("schema_design_module") or {}
+    registry = {
+        str(item.get("field_path")): item
+        for item in schema.get("field_registry") or []
+        if isinstance(item, dict) and item.get("field_path")
+    }
+    operations = []
+    for error in state.get("repair_instructions") or state.get("validation_errors") or []:
+        for field_path in _error_field_paths(error, "coverage:incomplete_object_contracts:"):
+            field = registry.get(field_path)
+            if not field:
+                continue
+            operations.append(
+                {
+                    "op": "update_field",
+                    "field_path": field_path,
+                    "changes": {
+                        "data_type": field.get("data_type")
+                        if "object" in str(field.get("data_type") or "").lower()
+                        else "object",
+                        "object_contract": merge_structured_object_contract(
+                            field.get("object_contract"),
+                            field_path,
+                            [],
+                        ),
+                    },
+                    "reason": "Coverage gate required a complete executable object contract.",
+                }
+            )
+        for field_path in _error_field_paths(error, "coverage:missing_reference_fields:"):
+            if field_path in registry:
+                continue
+            reference_spec = next(
+                (
+                    item
+                    for item in (state.get("shared_context") or {})
+                    .get("reference_field_contract", {})
+                    .get("leaf_fields", [])
+                    if isinstance(item, dict)
+                    and section_agent.normalize_reference_field_path(item.get("path"))
+                    == section_agent.normalize_reference_field_path(field_path)
+                ),
+                {},
+            )
+            operations.append(
+                {
+                    "op": "add_field",
+                    "field_path": field_path,
+                    "field": {
+                        "field_path": field_path,
+                        "section_id": infer_section_from_field_path(field_path),
+                        "field_name": field_path.rsplit(".", 1)[-1],
+                        "data_type": reference_spec.get("data_type") or infer_data_type_from_field_path(field_path),
+                        "description": reference_spec.get("description_hint") or "",
+                        "extraction_notes": reference_spec.get("extraction_notes") or "",
+                        "required": False,
+                        "source_basis": infer_source_basis_from_field_path(field_path),
+                        "concept_ids": [],
+                        "figure_constraint": None,
+                        "reason": "Applicable reference-field coverage gate required this exact leaf.",
+                    },
+                    "reason": "Applicable reference-field coverage gate required this exact leaf.",
+                }
+            )
+        for field_path in _error_field_paths(error, "coverage:redundant_fields:"):
+            if field_path not in registry:
+                continue
+            operations.append(
+                {
+                    "op": "remove_field",
+                    "field_path": field_path,
+                    "reason": "Coverage gate identified an exact semantic-contract duplicate.",
+                }
+            )
+    return operations
+
+
+def deterministic_schema_repair(state):
+    """Apply only version-bound structured patches; never infer fields from prose."""
+    schema = deepcopy((state.get("module_outputs") or {}).get("schema_design_module") or {})
+    unapproved_roots = schema_has_unapproved_roots(schema, state)
+    if unapproved_roots:
+        return compile_schema_from_field_planning(
+            state,
+            f"unapproved schema roots required a clean rebuild: {unapproved_roots}",
+        )
+
+    critic = (state.get("module_outputs") or {}).get("specialization_critic_module") or {}
+    current_revision = int(state.get("schema_revision", 0) or 0)
+    reviewed_revision = int(
+        critic.get("reviewed_schema_revision", state.get("critic_reviewed_schema_revision", -1))
+        or 0
+    )
+    operations = []
+    if reviewed_revision == current_revision:
+        candidate_operations = list(critic.get("patch_operations") or [])
+        if critic_patch_hash(candidate_operations) not in set(
+            state.get("rejected_critic_patch_hashes") or []
+        ):
+            operations = candidate_operations
+    if not operations:
+        operations = structured_patch_operations_from_errors(state)
+    if operations:
+        return apply_schema_patch_operations(state, operations)
+    return merge_update(
+        state,
+        {
+            "validation_errors": [
+                "schema_repair_requires_model: no safe structured patch was available; "
+                "repair the current schema without rebuilding it from field planning"
+            ],
+            "status": "awaiting_schema_model_repair",
+            "last_error_node": "schema_design_repair",
+            "last_error_type": "schema_model_repair_required",
+        },
+    )
+
+
 def schema_design_repair_node(state):
-    if state.get("last_error_type") == "schema_validation_failure" and state.get("module_outputs", {}).get("schema_design_module"):
-        update = deterministic_schema_repair(state)
+    if (
+        not state.get("module_outputs", {}).get("schema_design_module")
+        and state.get("module_outputs", {}).get("field_planning_module")
+    ):
+        update = compile_schema_from_field_planning(
+            state,
+            "schema design model output was empty after a failed or timed-out call",
+        )
         update = clear_downstream_outputs(
             update,
             ["specialization_critic_module", "aggregation"],
@@ -2065,7 +3804,42 @@ def schema_design_repair_node(state):
         update["next_node"] = "specialization_critic"
         update["last_error_node"] = ""
         update["last_error_type"] = ""
-        return write_state_snapshot(update, "schema_design_repair", "specialization_critic")
+        update = pause_for_schema_inspection_if_due(update, "specialization_critic")
+        return write_state_snapshot(
+            update,
+            "schema_design_repair",
+            update["next_node"],
+        )
+
+    if state.get("last_error_type") == "schema_validation_failure" and state.get("module_outputs", {}).get("schema_design_module"):
+        update = deterministic_schema_repair(state)
+        if update.get("last_error_type") == "schema_model_repair_required":
+            update = call_module_node(
+                state,
+                "schema_design_module",
+                build_schema_repair_prompt(state),
+                "schema_design_repair",
+                "specialization_critic",
+            )
+        if update.get("validation_errors"):
+            update["next_node"] = "supervisor_router"
+            return write_state_snapshot(
+                update,
+                "schema_design_repair",
+                "supervisor_router",
+            )
+        update = clear_downstream_outputs(
+            update,
+            ["specialization_critic_module", "aggregation"],
+        )
+        update["validation_errors"] = []
+        update["repair_instructions"] = []
+        update["status"] = "running"
+        update["next_node"] = "specialization_critic"
+        update["last_error_node"] = ""
+        update["last_error_type"] = ""
+        update = pause_for_schema_inspection_if_due(update, "specialization_critic")
+        return write_state_snapshot(update, "schema_design_repair", update["next_node"])
 
     update = call_module_node(
         state,
@@ -2085,11 +3859,12 @@ def schema_design_repair_node(state):
         update["next_node"] = "specialization_critic"
         update["last_error_node"] = ""
         update["last_error_type"] = ""
+        update = pause_for_schema_inspection_if_due(update, "specialization_critic")
     return write_state_snapshot(update, "schema_design_repair", update.get("next_node", "specialization_critic"))
 
 
-def local_schema_coverage_sufficient(schema_result, critic_result):
-    unapproved_roots = schema_has_unapproved_roots(schema_result or {}, {})
+def _legacy_local_schema_coverage_sufficient(schema_result, critic_result, state=None):
+    unapproved_roots = schema_has_unapproved_roots(schema_result or {}, state or {})
     if unapproved_roots:
         return False, [f"unapproved schema roots present: {unapproved_roots}"]
     registry = schema_result.get("field_registry") or []
@@ -2110,6 +3885,7 @@ def local_schema_coverage_sufficient(schema_result, critic_result):
         "material_family",
         "sample_identifier",
         "measurement_conditions",
+        "evidence",
         "source_figure",
         "source_table",
         "source_text",
@@ -2153,10 +3929,57 @@ def local_schema_coverage_sufficient(schema_result, critic_result):
 
     if "source_figure" in critic_text and not any(".source_figure" in path for path in field_paths):
         missing.append("no source_figure fields")
-    if "measurement_conditions" in critic_text and not any(
-        ".measurement_conditions" in path or ".conditions" in path for path in field_paths
-    ):
+    has_condition_contract = any(
+        ".measurement_conditions" in path
+        or ".conditions" in path
+        or path.startswith("condition_set_info.")
+        or path.startswith("condition_entry_info.")
+        or path.endswith("_condition_set_id")
+        for path in field_paths
+    )
+    if "measurement_conditions" in critic_text and not has_condition_contract:
         missing.append("no measurement condition fields")
+    return not missing, missing
+
+
+def local_schema_coverage_sufficient(schema_result, critic_result, state=None):
+    """Perform deterministic structural checks without interpreting critic prose."""
+    state = state or {}
+    unapproved_roots = schema_has_unapproved_roots(schema_result or {}, state)
+    if unapproved_roots:
+        return False, [f"unapproved schema roots present: {unapproved_roots}"]
+    registry = [
+        item
+        for item in (schema_result or {}).get("field_registry") or []
+        if isinstance(item, dict) and item.get("field_path")
+    ]
+    if not registry:
+        return False, ["field_registry is empty"]
+    missing = []
+    for field in registry:
+        slots = section_agent.object_contract_missing_slots(field)
+        if slots:
+            missing.append(
+                f"{field.get('field_path')}: incomplete object contract ({', '.join(sorted(slots))})"
+            )
+        if "figure" in (field.get("source_basis") or []) and not isinstance(
+            field.get("figure_constraint"), dict
+        ):
+            missing.append(f"{field.get('field_path')}: missing figure_constraint")
+
+    if critic_result.get("redo_needed") or critic_result.get("is_generic"):
+        operations = critic_result.get("patch_operations")
+        if not isinstance(operations, list) or not operations:
+            missing.append("critic requested redesign without structured patch_operations")
+        else:
+            _normalized, patch_errors = validate_schema_patch_operations(
+                schema_result,
+                operations,
+                state,
+            )
+            missing.extend(f"critic patch invalid: {item}" for item in patch_errors)
+            if not patch_errors:
+                missing.append("critic supplied pending structured patch_operations")
     return not missing, missing
 
 
@@ -2170,7 +3993,11 @@ def specialization_critic_node(state):
         or state.get("shared_context", {}).get("human_advice")
         or ""
     )
-    if human_advice_text and registry:
+    if (
+        human_advice_text
+        and registry
+        and bool(state.get("allow_local_critic_bypass_after_human_advice", False))
+    ):
         critic_result = {
             "specialization_status": "local_structural_review_after_human_advice",
             "redo_needed": False,
@@ -2178,8 +4005,26 @@ def specialization_critic_node(state):
             "missing_concepts": [human_advice_text],
             "redo_directives": [],
             "structural_weaknesses": [],
+            "field_utility_audit": {
+                "reviewed_field_count": len(registry),
+                "decision": "pass",
+                "unsupported_fields": [],
+                "redundant_fields": [],
+                "alias_or_unit_variant_fields": [],
+                "derivable_duplicate_fields": [],
+                "rationale": (
+                    "Local structural fallback reviewed traceability only; "
+                    "official benchmark use remains disabled for this path."
+                ),
+            },
+            "patch_operations": [],
+            "reviewed_schema_revision": int(state.get("schema_revision", 0) or 0),
         }
-        coverage_ok, coverage_missing = local_schema_coverage_sufficient(schema_result, critic_result)
+        coverage_ok, coverage_missing = local_schema_coverage_sufficient(
+            schema_result,
+            critic_result,
+            state,
+        )
         critic_result["local_structural_validation"] = {
             "status": "passed" if coverage_ok else "failed",
             "missing": coverage_missing[:20],
@@ -2222,6 +4067,7 @@ def specialization_critic_node(state):
             outputs["section_partition_module"],
             outputs["field_planning_module"],
             outputs["schema_design_module"],
+            repair_feedback=state.get("repair_instructions") or [],
         ),
         "specialization_critic",
         "aggregation",
@@ -2229,11 +4075,96 @@ def specialization_critic_node(state):
     if update.get("validation_errors"):
         return update
 
-    critic_result = update["module_outputs"].get("specialization_critic_module") or {}
+    critic_result = deepcopy(
+        update["module_outputs"].get("specialization_critic_module") or {}
+    )
+    utility_errors = section_agent.validate_critic_field_utility(
+        critic_result,
+        update["module_outputs"].get("schema_design_module") or {},
+    )
+    if utility_errors:
+        update["validation_errors"] = utility_errors
+        update["status"] = "awaiting_supervisor_decision"
+        update["last_error_node"] = "specialization_critic"
+        update["last_error_type"] = "schema_validation_failure"
+        update["next_node"] = "supervisor_router"
+        return write_state_snapshot(
+            update,
+            "specialization_critic",
+            "supervisor_router",
+        )
+    reviewed_revision = int(update.get("schema_revision", 0) or 0)
+    critic_result["reviewed_schema_revision"] = reviewed_revision
+    update["module_outputs"]["specialization_critic_module"] = critic_result
+    update["critic_reviewed_schema_revision"] = reviewed_revision
     if critic_result.get("redo_needed") or critic_result.get("is_generic"):
+        patch_operations = critic_result.get("patch_operations") or []
+        patch_hash = critic_patch_hash(patch_operations)
+        _normalized, patch_errors = validate_schema_patch_operations(
+            update["module_outputs"].get("schema_design_module") or {},
+            patch_operations,
+            update,
+        )
+        if patch_errors:
+            rejected_hashes = list(update.get("rejected_critic_patch_hashes") or [])
+            if patch_hash not in rejected_hashes:
+                rejected_hashes.append(patch_hash)
+            critic_result["patch_validation"] = {
+                "status": "rejected",
+                "patch_hash": patch_hash,
+                "errors": list(patch_errors),
+            }
+            update["module_outputs"]["specialization_critic_module"] = critic_result
+            feedback = [f"schema_patch_rejected:{item}" for item in patch_errors]
+            update["rejected_critic_patch_hashes"] = rejected_hashes
+            update["validation_errors"] = feedback
+            update["repair_instructions"] = feedback
+            update["status"] = "awaiting_supervisor_decision"
+            update["last_error_node"] = "specialization_critic"
+            update["last_error_type"] = "schema_validation_failure"
+            update["next_node"] = "supervisor_router"
+            return write_state_snapshot(
+                update,
+                "specialization_critic",
+                "supervisor_router",
+            )
+        preview = apply_schema_patch_operations(
+            update,
+            patch_operations,
+            source="critic_internal_task_contract_preview",
+        )
+        contract_errors = [
+            str(error)
+            for error in preview.get("validation_errors") or []
+            if str(error).startswith("schema_patch_contract_regression:")
+        ]
+        if contract_errors:
+            rejected_hashes = list(update.get("rejected_critic_patch_hashes") or [])
+            if patch_hash not in rejected_hashes:
+                rejected_hashes.append(patch_hash)
+            critic_result["patch_validation"] = {
+                "status": "rejected",
+                "patch_hash": patch_hash,
+                "errors": contract_errors,
+                "contract_scope": "run_internal_task_contract_not_external_gold",
+            }
+            update["module_outputs"]["specialization_critic_module"] = critic_result
+            update["rejected_critic_patch_hashes"] = rejected_hashes
+            update["validation_errors"] = contract_errors
+            update["repair_instructions"] = contract_errors
+            update["status"] = "awaiting_supervisor_decision"
+            update["last_error_node"] = "specialization_critic"
+            update["last_error_type"] = "schema_validation_failure"
+            update["next_node"] = "supervisor_router"
+            return write_state_snapshot(
+                update,
+                "specialization_critic",
+                "supervisor_router",
+            )
         coverage_ok, coverage_missing = local_schema_coverage_sufficient(
             update["module_outputs"].get("schema_design_module") or {},
             critic_result,
+            update,
         )
         if coverage_ok:
             critic_result = deepcopy(critic_result)
@@ -2270,12 +4201,36 @@ def specialization_critic_node(state):
         update["next_node"] = "supervisor_router"
         return write_state_snapshot(update, "specialization_critic", "supervisor_router")
 
-    return update
+    return write_state_snapshot(update, "specialization_critic", "aggregation")
 
 
 def aggregation_node(state):
     outputs = state["module_outputs"]
     args = dict_to_namespace(state["args"])
+    schema_revision = int(state.get("schema_revision", 0) or 0)
+    critic_revision = int(
+        (outputs.get("specialization_critic_module") or {}).get(
+            "reviewed_schema_revision",
+            state.get("critic_reviewed_schema_revision", -1),
+        )
+        or 0
+    )
+    if critic_revision != schema_revision:
+        errors = [
+            "schema_revision_mismatch: specialization critic did not review the current schema revision "
+            f"({critic_revision} != {schema_revision})"
+        ]
+        update = merge_update(
+            state,
+            {
+                "validation_errors": errors,
+                "status": "awaiting_supervisor_decision",
+                "last_error_node": "specialization_critic",
+                "last_error_type": "schema_validation_failure",
+                "next_node": "supervisor_router",
+            },
+        )
+        return write_state_snapshot(update, "aggregation", "supervisor_router")
 
     if getattr(args, "use_llm_aggregation", False):
         update = call_module_node(
@@ -2365,6 +4320,7 @@ def write_output_node(state):
     query_requirements = shared.get("query_requirements", [])
     module_outputs = state.get("module_outputs", {})
     output_inputs = {
+        "task_contract": dict(section_agent.MATERIAL_LITERATURE_TASK_CONTRACT),
         "database_goal": args.database_goal,
         "discipline": args.discipline,
         "query_requirements": query_requirements,
@@ -2374,6 +4330,8 @@ def write_output_node(state):
             getattr(args, "require_human_advice_before_supervisor", False) or state.get("human_advice")
         ),
         "human_advice_provided": bool(state.get("human_advice")),
+        "structured_protocol_enabled": bool(shared.get("structured_protocol_enabled")),
+        "structured_concept_seeding_only": bool(shared.get("structured_concept_seeding_only")),
     }
     errors = state.get("validation_errors", [])
     result = state.get("result")
@@ -2397,9 +4355,39 @@ def write_output_node(state):
             )
         except KeyError:
             result = None
+    output_status = state.get("status", "needs_review")
+    if requested_stop_after_module(state) and not errors:
+        output_status = "partial_success"
+    provenance = state.get("execution_provenance")
+    if not isinstance(provenance, dict):
+        completed_modules = [
+            name
+            for name in section_agent.REQUIRED_PIPELINE_MODULES
+            if isinstance(module_outputs.get(name), dict)
+            and not (state.get("module_errors", {}).get(name) or [])
+        ]
+        all_required_modules_completed = len(completed_modules) == len(
+            section_agent.REQUIRED_PIPELINE_MODULES
+        )
+        provenance = {
+            "mode": "online_full_pipeline"
+            if all_required_modules_completed
+            else "online_partial_pipeline",
+            "fallback_used": False,
+            "all_required_modules_completed": all_required_modules_completed,
+            "completed_module_count": len(completed_modules),
+            "required_module_count": len(section_agent.REQUIRED_PIPELINE_MODULES),
+            "request_timeout_seconds": getattr(args, "request_timeout", None),
+            "module_max_tokens": dict(section_agent.MODULE_MAX_TOKENS),
+        }
     output = {
         "step": "step8_section_design_agent_langgraph_human_gate",
         "framework": STEP8_FRAMEWORK,
+        "run_identity": state.get("run_identity"),
+        "schema_revision": int(state.get("schema_revision", 0) or 0),
+        "critic_reviewed_schema_revision": int(
+            state.get("critic_reviewed_schema_revision", -1) or 0
+        ),
         "inputs": output_inputs,
         "reference_paper_context_used": shared.get("reference_paper_context", ""),
         "agent_flow": section_agent.build_agent_flow_trace(
@@ -2408,19 +4396,36 @@ def write_output_node(state):
             result,
             errors,
         ),
+        "protocol_messages": section_agent.build_step8_protocol_messages(
+            output_inputs,
+            module_outputs,
+            result,
+            errors,
+            state.get("module_errors", {}),
+        ),
         "module_outputs": module_outputs,
         "module_errors": state.get("module_errors", {}),
         "result": result,
         "validation_errors": errors,
-        "status": state.get("status", "needs_review"),
+        "status": output_status,
+        "execution_provenance": provenance,
         "attempts": {
             "modules": state.get("module_attempts", {}),
             "final_redo": [],
         },
     }
+    output["protocol_validation"] = section_agent.agent_protocol.validate_message_list(output["protocol_messages"])
     output_path = Path(args.output)
-    output_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
-    write_state_snapshot(merge_update(state, {"output": str(output_path)}), "write_output", "__end__")
+    run_artifact_guard.atomic_write_json(
+        output_path,
+        output,
+        run_identity=state.get("run_identity"),
+    )
+    write_state_snapshot(
+        merge_update(state, {"output": str(output_path), "status": output_status}),
+        "write_output",
+        "__end__",
+    )
     print(f"Saved result to {output_path}")
     print(f"Status: {output['status']}")
     return {"output": str(output_path), "status": output["status"]}
@@ -2505,18 +4510,92 @@ def build_parser():
         "--max-supervisor-retries",
         type=int,
         default=1,
-        help="Maximum supervisor-directed retries per failed graph node.",
+        help="Maximum supervisor-directed retries per distinct blocker fingerprint.",
+    )
+    parser.add_argument(
+        "--max-total-supervisor-repairs",
+        type=int,
+        default=12,
+        help="Hard safety budget across all distinct supervisor repair cycles.",
+    )
+    parser.add_argument(
+        "--schema-inspection-interval",
+        type=int,
+        default=10,
+        help=(
+            "Pause for convergence and critic-strictness inspection at each interval "
+            "of unresolved schema revisions."
+        ),
+    )
+    parser.add_argument(
+        "--repeated-blocker-inspection-threshold",
+        type=int,
+        default=3,
+        help=(
+            "Pause when an identical blocker repeats this many times without a schema "
+            "revision, so protocol defects or over-strict rules can be inspected early."
+        ),
+    )
+    parser.add_argument(
+        "--schema-inspection-approved-through",
+        type=int,
+        default=0,
+        help="Resume-only approval boundary after the preserved history was inspected.",
     )
     parser.add_argument(
         "--skip-human-expert-review",
         action="store_true",
         help="Explicitly skip the post-internal-pass human expert review gate.",
     )
+    parser.add_argument(
+        "--structured-protocol",
+        action="store_true",
+        help=(
+            "Apply structured expert schema concepts before design and expose protocol mode "
+            "in the supervisor-visible run contract."
+        ),
+    )
     return parser
 
 
-def main():
-    args = build_parser().parse_args()
+def explicit_cli_destinations(parser, argv):
+    """Return only argparse destinations explicitly present on the command line."""
+    option_to_dest = {
+        option: action.dest
+        for action in parser._actions
+        for option in action.option_strings
+    }
+    destinations = set()
+    for token in argv:
+        option = str(token).split("=", 1)[0]
+        destination = option_to_dest.get(option)
+        if destination:
+            destinations.add(destination)
+    return destinations
+
+
+def inject_resume_human_advice(initial_state, human_advice):
+    advice = str(human_advice or "").strip()
+    shared = deepcopy(initial_state.get("shared_context", {}))
+    shared["human_advice"] = advice
+    post_design_review = bool(
+        initial_state.get("next_node") == "human_advice_gate"
+        or initial_state.get("current_node") == "human_advice_gate"
+        or initial_state.get("status") == "waiting_for_human_advice"
+    )
+    if not post_design_review:
+        shared["human_advice_available_before_design"] = bool(advice)
+    initial_state["shared_context"] = shared
+    initial_state["human_advice"] = advice
+    if post_design_review:
+        initial_state["post_design_human_advice"] = advice
+    return initial_state
+
+
+def _legacy_main_without_clean_run_guard():
+    parser = build_parser()
+    args = parser.parse_args()
+    explicit_overrides = explicit_cli_destinations(parser, sys.argv[1:])
     if not args.resume_from_state:
         missing = [
             name
@@ -2550,20 +4629,28 @@ def main():
         else:
             initial_state = loaded_snapshot
             snapshot_args = deepcopy(initial_state.get("args", {}))
-            for key in ("api_key", "base_url", "model", "request_timeout"):
-                cli_value = getattr(args, key, None)
-                if cli_value:
-                    snapshot_args[key] = cli_value
+            for key in (
+                "api_key",
+                "base_url",
+                "model",
+                "llm_backend",
+                "request_timeout",
+                "temperature",
+                "max_retries",
+                "max_supervisor_retries",
+                "skip_human_expert_review",
+                "checkpoint_output",
+                "stop_after_module",
+            ):
+                if key in explicit_overrides:
+                    snapshot_args[key] = getattr(args, key, None)
             initial_state["args"] = snapshot_args
         if args.human_advice or args.human_advice_path:
             human_advice = args.human_advice or section_agent.load_optional_text(args.human_advice_path)
             snapshot_args["human_advice"] = human_advice
             snapshot_args["human_advice_path"] = ""
-            shared = deepcopy(initial_state.get("shared_context", {}))
-            shared["human_advice"] = human_advice
             initial_state["args"] = snapshot_args
-            initial_state["shared_context"] = shared
-            initial_state["human_advice"] = human_advice
+            initial_state = inject_resume_human_advice(initial_state, human_advice)
             if initial_state.get("next_node") == "human_advice_gate":
                 initial_state["next_node"] = "human_advice_gate"
     else:
@@ -2573,7 +4660,7 @@ def main():
     interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
     if interrupts and not interactive:
         print("Paused before supervisor_module. Human advice is required.")
-        print(interrupts)
+        print_console_safe(interrupts)
         return
 
     if interrupts and interactive:
@@ -2595,9 +4682,172 @@ def main():
             )
         )
     else:
-        print(result)
+        print_console_safe(result)
     if thread_id:
         print(f"Thread id: {thread_id}")
+
+
+def build_graph_step8_input_identity(args_dict):
+    immutable_args = deepcopy(args_dict)
+    # Human advice is intentionally mutable on explicit resume. The scientific
+    # task, corpus, provider/model, and protocol mode remain immutable.
+    immutable_args["human_advice"] = ""
+    immutable_args["human_advice_path"] = ""
+    return section_agent.build_step8_input_identity(dict_to_namespace(immutable_args))
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    explicit_overrides = explicit_cli_destinations(parser, sys.argv[1:])
+    if not args.resume_from_state:
+        missing = [
+            name
+            for name in (
+                "database_goal",
+                "discipline",
+                "query_requirements",
+                "key_description_path",
+            )
+            if not getattr(args, name)
+        ]
+        if missing:
+            raise SystemExit(
+                "Missing required arguments for a new run: "
+                + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+            )
+
+    args_dict = namespace_to_dict(args)
+    requested_thread_id = args_dict.pop("thread_id")
+    interactive = args_dict.pop("interactive_human_gate")
+    resume_from_state = args_dict.pop("resume_from_state")
+
+    if resume_from_state:
+        initial_state = load_state_snapshot(resume_from_state)
+        if initial_state.get("step") == "step8_section_design_agent_checkpoint":
+            raise run_artifact_guard.RunIdentityError(
+                "Legacy Step8 checkpoints cannot be resumed in clean-run mode. "
+                "Start a fresh run with new artifact paths."
+            )
+        snapshot_args = deepcopy(initial_state.get("args", {}))
+        for key in (
+            "api_key",
+            "base_url",
+            "model",
+            "llm_backend",
+            "request_timeout",
+            "temperature",
+            "max_retries",
+            "max_supervisor_retries",
+            "max_total_supervisor_repairs",
+            "schema_inspection_interval",
+            "repeated_blocker_inspection_threshold",
+            "skip_human_expert_review",
+            "stop_after_module",
+        ):
+            if key in explicit_overrides:
+                snapshot_args[key] = getattr(args, key, None)
+        input_identity = build_graph_step8_input_identity(snapshot_args)
+        run_identity = run_artifact_guard.validate_resume_identity(
+            initial_state,
+            pipeline="step8_section_design_langgraph",
+            input_identity=input_identity,
+            output_path=snapshot_args.get("output", ""),
+        )
+        initial_state["args"] = snapshot_args
+        initial_state["run_identity"] = run_identity
+        if args.schema_inspection_approved_through:
+            initial_state["schema_inspection_approved_through"] = int(
+                args.schema_inspection_approved_through
+            )
+        if args.human_advice or args.human_advice_path:
+            human_advice = args.human_advice or section_agent.load_optional_text(
+                args.human_advice_path
+            )
+            snapshot_args["human_advice"] = human_advice
+            snapshot_args["human_advice_path"] = ""
+            initial_state["args"] = snapshot_args
+            initial_state = inject_resume_human_advice(initial_state, human_advice)
+        run_artifact_guard.update_run_status(
+            run_identity,
+            "running",
+            resumed_from=str(Path(resume_from_state).resolve(strict=False)),
+        )
+    else:
+        input_identity = build_graph_step8_input_identity(args_dict)
+        output_path = Path(args_dict["output"])
+        checkpoint_path = state_path_from_args(dict_to_namespace(args_dict))
+        human_context_path = human_gate_context_path_from_args(
+            dict_to_namespace(args_dict)
+        )
+        run_identity = run_artifact_guard.reserve_fresh_run(
+            pipeline="step8_section_design_langgraph",
+            output_path=output_path,
+            input_identity=input_identity,
+            artifact_paths=[output_path, checkpoint_path, human_context_path],
+        )
+        initial_state = {
+            "args": args_dict,
+            "next_node": "prepare",
+            "run_identity": run_identity,
+        }
+
+    app = build_human_gate_graph()
+    config = {
+        "configurable": {
+            "thread_id": f"{requested_thread_id}:{run_identity['run_id']}"
+        }
+    }
+    try:
+        result = app.invoke(initial_state, config=config)
+        interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
+        if interrupts and not interactive:
+            run_artifact_guard.update_run_status(
+                run_identity,
+                "interrupted",
+                pause_reason="waiting_for_human_advice",
+            )
+            print("Paused before supervisor_module. Human advice is required.")
+            print_console_safe(interrupts)
+            return
+        if interrupts and interactive:
+            print("Paused before supervisor_module. Enter human advice, then press Enter:")
+            advice = input("> ").strip()
+            result = app.invoke(Command(resume=advice), config=config)
+    except BaseException as exc:
+        run_artifact_guard.update_run_status(
+            run_identity,
+            "interrupted",
+            error_type=type(exc).__name__,
+        )
+        raise
+
+    result_status = result.get("status") if isinstance(result, dict) else "unknown"
+    run_artifact_guard.update_run_status(
+        run_identity,
+        "completed" if result_status in {"success", "partial_success"} else "needs_review",
+        result_status=result_status,
+    )
+    if isinstance(result, dict):
+        print(
+            json.dumps(
+                {
+                    "status": result.get("status"),
+                    "output": result.get("output"),
+                    "current_node": result.get("current_node"),
+                    "next_node": result.get("next_node"),
+                    "run_id": run_identity["run_id"],
+                    "reference_papers": initial_state.get("args", {}).get(
+                        "reference_papers", []
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print_console_safe(result)
+    if requested_thread_id:
+        print(f"Thread id: {requested_thread_id}:{run_identity['run_id']}")
 
 
 if __name__ == "__main__":

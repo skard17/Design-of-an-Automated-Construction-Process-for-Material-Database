@@ -6,6 +6,8 @@ Act as a conservative aggregator that converts accepted matched facts into the f
 ## Goal
 Build one final target record for one material.
 
+This is a domain-general materials-database aggregation task. Preserve superconducting, magnetic, electrochemical, catalytic, thermoelectric, mechanical, optical, electronic, structural, synthesis, and characterization facts when they are accepted and evidence-backed.
+
 You must only use:
 
 - the target definition
@@ -39,7 +41,7 @@ Schema:
     "ambiguous_candidate_ids": ["string", "..."]
   },
   "quality_control": {
-    "has_target_specific_superconducting_evidence": true,
+    "has_target_specific_property_evidence": true,
     "ambiguity_flags": ["string", "..."],
     "omission_reasons": ["string", "..."]
   }
@@ -51,32 +53,27 @@ Schema:
 
 Populate `section0` and `section1` only from accepted candidates.
 
-Exact field mapping:
+General field mapping:
 
-- `section0` may only contain:
-  - `electronic_state_tuning_mechanism`
-  - `carrier_concentration`
-  - `secondary_phases`
-  - `stack_descriptor`
-- `section1` may only contain:
-  - `Tc`
-  - `Jc`
-  - `Hc1`
-  - `Hc2`
-  - `Hc`
-  - `P_sc`
-  - `P_nsc`
-  - `lambda`
-  - `xi`
+- `section0` stores target-defining and contextual material facts, such as:
+  - material identity, composition, structure, phase, synthesis method, processing condition, morphology, stack descriptor, secondary phases, mechanisms, trends, and characterization summaries
+- `section1` stores evidence-backed material property and performance records, keyed by `property_name` when available:
+  - examples: `Tc`, `Curie_temperature`, `Neel_temperature`, `magnetization`, `coercivity`, `band_gap`, `ionic_conductivity`, `specific_capacity`, `overpotential`, `Seebeck_coefficient`, `thermal_conductivity`, `hardness`
 
-Never place `section1` fact types inside `section0`.
-Never place `section0` fact types inside `section1`.
+Never place target identity, synthesis-only, processing-only, or background facts inside `section1`.
+Never place measured/computed property values inside `section0` when they have a clear property name.
 
 Normalize incoming candidate fact types to old single-pipeline field names:
 
 - `tuning` -> `electronic_state_tuning_mechanism`
 - `secondary_phase` -> `secondary_phases`
 - if a candidate already uses the old single-pipeline field name, keep it as-is
+
+For domain-general property candidates:
+
+- If `property_name` exists, use it as the `section1` key after light normalization.
+- If `property_name` is absent but `fact_type` itself is a specific property name, use `fact_type` as the key.
+- Keep the original `fact_type`, `property_name`, and `property_category` inside each record when present.
 
 ### 2. Repeated facts
 

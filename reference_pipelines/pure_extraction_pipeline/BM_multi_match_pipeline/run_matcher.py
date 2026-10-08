@@ -13,6 +13,14 @@ from utils.prompt_utils import clean_llm_output, inject_blocks, load_prompt_temp
 
 
 PROMPT_FILE = "matcher.md"
+PROPERTY_FACT_TYPES = {
+    "property",
+    "property_value",
+    "performance_metric",
+    "transition_temperature",
+    "critical_field",
+    "critical_current_density",
+}
 
 
 def normalize_text(text: str) -> str:
@@ -177,9 +185,11 @@ def is_multi_target_group_fact(candidate: dict, all_profiles: list[dict]) -> boo
     return len(local_mentions) > 1
 
 
-def is_shared_series_tc_fact(candidate: dict, manifest: dict) -> bool:
-    if str(candidate.get("fact_type") or "") != "Tc":
+def is_shared_series_property_fact(candidate: dict, manifest: dict) -> bool:
+    fact_type = str(candidate.get("fact_type") or "")
+    if fact_type not in PROPERTY_FACT_TYPES and not candidate.get("property_name"):
         return False
+
     target_names = [str(x) for x in (candidate.get("attribution_hint", {}) or {}).get("candidate_targets", []) if str(x).strip()]
     manifest_names = {
         normalize_text(str(item.get("canonical_name") or ""))
@@ -194,10 +204,15 @@ def is_shared_series_tc_fact(candidate: dict, manifest: dict) -> bool:
     shared_markers = (
         "remains almost constant",
         "remains at",
+        "same value",
+        "nearly unchanged",
+        "unchanged",
         "always",
         "independent of x",
-        "maximum tc value",
         "constant at",
+        "for all samples",
+        "for all compounds",
+        "across the series",
     )
     return any(marker in evidence for marker in shared_markers)
 
@@ -263,7 +278,7 @@ def split_candidates_for_target(manifest: dict, target: dict, fact_candidates: d
         reason_is_family_level = reason == "family_level"
         multi_target_group_fact = is_multi_target_group_fact(candidate, all_profiles)
         fragmentary_comparative_fact = is_fragmentary_comparative_fact(candidate, target_profile)
-        shared_series_tc_fact = is_shared_series_tc_fact(candidate, manifest)
+        shared_series_property_fact = is_shared_series_property_fact(candidate, manifest)
         evidence_text = str(candidate.get("verbatim_evidence") or "")
         target_context_present = any_alias_present(target_profile.get("context_labels", set()), normalize_text(evidence_text))
         sibling_context_present = any(
@@ -282,9 +297,9 @@ def split_candidates_for_target(manifest: dict, target: dict, fact_candidates: d
             decision = "reject"
             decision_reason = "auto: ordered candidate group mapped to sibling"
 
-        if decision is None and shared_series_tc_fact:
+        if decision is None and shared_series_property_fact:
             decision = "accept"
-            decision_reason = "auto: shared series-level Tc fact applies to every material target in the manifest"
+            decision_reason = "auto: shared series-level property fact applies to every material target in the manifest"
 
         if decision is None and reason_is_family_level and candidate.get("fact_type") != "stack_descriptor":
             decision = "reject"
@@ -403,7 +418,7 @@ def run_matcher(paper_id: str, target_id: str) -> None:
             api_key=api_key,
             temperature=float(stage_cfg.get("temperature", 0.0)),
             timeout_sec=int(provider.get("timeout_sec", 60)),
-            system_prompt="You are an expert in superconducting materials information extraction.",
+            system_prompt="You are an expert in materials science information extraction and database construction.",
         )
         out_text = clean_llm_output(response)
         llm_result = json.loads(out_text)

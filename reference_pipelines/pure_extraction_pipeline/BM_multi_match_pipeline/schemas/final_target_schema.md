@@ -23,7 +23,7 @@
         "ambiguous_candidate_ids": ["string"]
       },
       "quality_control": {
-        "has_target_specific_superconducting_evidence": true,
+        "has_target_specific_property_evidence": true,
         "ambiguity_flags": ["string"],
         "omission_reasons": ["string"]
       }
@@ -41,3 +41,5 @@ The final target output intentionally follows the single-material final record s
 - `paper_info`
 
 Multi-material bookkeeping is kept inside `paper_info.metadata`, because each target emitted by this pipeline is still one material record.
+
+For the domain-general pipeline, `material_info.section0` stores identity/context/process facts and `material_info.section1` stores target-specific property or performance records keyed by the extracted property name.

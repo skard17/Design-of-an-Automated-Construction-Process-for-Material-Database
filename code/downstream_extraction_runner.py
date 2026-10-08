@@ -1,10 +1,14 @@
+import hashlib
 import json
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import prompt_quality_code_agent as prompt_agent
+import materials_agent_protocol as agent_protocol
+import run_artifact_guard
 
 
 def json_dumps(value: Any) -> str:
@@ -130,23 +134,49 @@ def normalize_strings_deep(value: Any) -> Any:
     return value
 
 
-def stage_fields(prompt_output: dict[str, Any], stage_id: str, max_fields: int | None = None) -> list[str]:
+def stage_field_specs(prompt_output: dict[str, Any], stage_id: str) -> list[dict[str, Any]]:
     prompts = (
         (prompt_output.get("module_outputs") or {})
         .get("section_extraction_prompt_module", {})
         .get("section_extraction_prompts", {})
     )
     contract = (prompts.get(stage_id) or {}).get("output_contract") or {}
-    fields = [str(item) for item in contract.get("fields", []) if item]
-    if max_fields and max_fields > 0:
-        return fields[:max_fields]
-    return fields
+    specs = [
+        dict(item)
+        for item in contract.get("field_specs", []) or []
+        if isinstance(item, dict) and item.get("field_path")
+    ]
+    if specs:
+        return specs
+    return [
+        {"field_path": str(item), "data_type": "unspecified", "description": ""}
+        for item in contract.get("fields", []) or []
+        if item
+    ]
+
+
+def stage_fields(prompt_output: dict[str, Any], stage_id: str) -> list[str]:
+    """Return the complete stage field inventory; batching happens separately."""
+    return [item["field_path"] for item in stage_field_specs(prompt_output, stage_id)]
 
 
 def chunk_fields(fields: list[str], max_fields: int) -> list[list[str]]:
     if not max_fields or max_fields <= 0 or len(fields) <= max_fields:
         return [fields]
     return [fields[index : index + max_fields] for index in range(0, len(fields), max_fields)]
+
+
+def classify_extraction_error(error: Any) -> str:
+    text = str(error or "").casefold()
+    if "http error 429" in text or "rate limit" in text or "tpm" in text:
+        return "rate_limit"
+    if any(token in text for token in ("http error 500", "http error 502", "http error 503", "http error 504")):
+        return "transient_http"
+    if any(token in text for token in ("transport error", "timed out", "timeout")):
+        return "transport_timeout"
+    if any(token in text for token in ("jsondecodeerror", "expecting value", "unterminated string", "invalid json")):
+        return "response_json_parse"
+    return "extraction_error"
 
 
 def merge_stage_payloads(
@@ -157,9 +187,11 @@ def merge_stage_payloads(
 ) -> dict[str, Any]:
     extracted = []
     missing = []
+    unresolved = []
     quality_notes = []
     seen_extracted = set()
     seen_missing = set()
+    seen_unresolved = set()
 
     for batch_index, payload in enumerate(payloads):
         if payload.get("error") or payload.get("raw_text"):
@@ -168,6 +200,7 @@ def merge_stage_payloads(
                 "section_id": stage.get("section_id"),
                 "document": document_name,
                 "error": payload.get("error", "batch extraction failed"),
+                "error_type": payload.get("error_type") or classify_extraction_error(payload.get("error")),
                 "raw_text": payload.get("raw_text", ""),
                 "batch_index": batch_index,
             }
@@ -191,6 +224,18 @@ def merge_stage_payloads(
                 continue
             seen_missing.add(key)
             missing.append(item)
+        for item in payload.get("unresolved_fields") or []:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("field_path") or ""),
+                str(item.get("unresolved_reason") or ""),
+                json.dumps(item.get("candidate_value"), ensure_ascii=False, sort_keys=True, default=str),
+            )
+            if key in seen_unresolved:
+                continue
+            seen_unresolved.add(key)
+            unresolved.append(item)
         quality_notes.extend(payload.get("quality_notes") or [])
 
     return {
@@ -199,6 +244,7 @@ def merge_stage_payloads(
         "document": document_name,
         "extracted_fields": extracted,
         "missing_fields": missing,
+        "unresolved_fields": unresolved,
         "quality_notes": quality_notes,
         "batching": {
             "enabled": len(field_batches) > 1,
@@ -264,8 +310,13 @@ def build_stage_prompt(
     stage: dict[str, Any],
     fields: list[str],
     dependency_context: dict[str, Any],
+    field_specs: list[dict[str, Any]] | None = None,
 ) -> str:
     specific_rules = "\n".join(f"- {rule}" for rule in stage_specific_rules(stage))
+    specs = field_specs or [
+        {"field_path": field_path, "data_type": "unspecified", "description": ""}
+        for field_path in fields
+    ]
     return f"""
 You are running a section-wise materials literature extraction bench.
 
@@ -280,16 +331,24 @@ Dependency outputs already available:
 Allowed field paths for this stage:
 {json_dumps(fields)}
 
+Authoritative field definitions for this batch:
+{json_dumps(specs)}
+
 Rules:
+- The fixed task is automated construction of a materials database from parsed scientific literature. Do not extract textbook knowledge, laboratory-note content, generic report summaries, or unrelated document facts.
 - Return JSON only.
 - Extract only information supported by the document text.
 - Do not invent values.
 - Match the exact semantics of each field path. Do not substitute a related descriptor, mechanism, oxidation state, electronic configuration, preparation statement, or hypothetical structure for the requested quantity.
+- Treat each field definition's description, extraction_notes, data_type, source_basis, object_contract, and figure_constraint as binding. A similar-sounding term is not enough when it violates that contract.
+- Keep independently queryable values, units, criteria, directions, conditions, methods, sample bindings, and evidence locations in their designated fields. Do not collapse them into a generic summary object.
+- For array or object fields, emit one record per material/sample/condition instance as required by the object contract; do not merge measurements made under materially different conditions.
 - A characterization technique counts as extracted only when the document reports an actual observation, result, spectrum, image, curve, map, or measured value from that technique. Merely naming a technique or describing sample preparation is not a result.
 - Do not turn "implied", "likely", "consistent with", "assumed", "presumed", or model-dependent interpretations into explicit facts. Extract an inferred classification only when the allowed field explicitly models inference and the output records its assignment basis, source type, confidence, and direct evidence.
 - Never put null, "not mentioned", "not reported", "none", "N/A", or empty values in extracted_fields.
 - If a requested field is absent, put it under missing_fields with field_path and a short missing_reason.
-- Account for every allowed field path exactly once per material/sample: either with direct evidence in extracted_fields or with an explicit reason in missing_fields.
+- If relevant literature evidence exists but its entity ownership, conditions, interpretation, or support is genuinely ambiguous, put it under unresolved_fields with the candidate value when available, evidence_text, source_hint, and unresolved_reason. Do not force it into extracted_fields or missing_fields.
+- Account for every allowed field path exactly once per material/sample: with direct evidence in extracted_fields, an explicit absence in missing_fields, or a reviewable ambiguity in unresolved_fields.
 - Every extracted value must include field_path, non-null value, evidence_text, confidence, and source_hint.
 - evidence_text must directly support the value and field meaning; nearby topical text is insufficient.
 - If the document has multiple material systems, keep material_system or sample_id on each extracted item when possible.
@@ -316,6 +375,15 @@ Required JSON shape:
   ],
   "missing_fields": [
     {{"field_path": "...", "missing_reason": "..."}}
+  ],
+  "unresolved_fields": [
+    {{
+      "field_path": "...",
+      "candidate_value": null,
+      "evidence_text": "...",
+      "source_hint": "page/section/figure/table if available",
+      "unresolved_reason": "ambiguous entity, conditions, interpretation, or evidence support"
+    }}
   ],
   "quality_notes": []
 }}
@@ -585,6 +653,7 @@ def assess_stage_yield(
     expected = {str(field).strip() for field in expected_fields if str(field).strip()}
     extracted_total = sum(int(check.get("extracted_count", 0) or 0) for check in document_checks)
     missing_total = sum(int(check.get("missing_count", 0) or 0) for check in document_checks)
+    unresolved_total = sum(int(check.get("unresolved_count", 0) or 0) for check in document_checks)
     if expected and document_checks:
         addressed_total = sum(
             len(expected.intersection({str(path).strip() for path in check.get("addressed_field_paths", [])}))
@@ -597,6 +666,9 @@ def assess_stage_yield(
     if extracted_total:
         status = "passed"
         outcome = "values_extracted"
+    elif unresolved_total and coverage_ratio >= 1.0:
+        status = "passed"
+        outcome = "unresolved_requires_review"
     elif stage_id == "figure_classification" or coverage_ratio >= 1.0:
         status = "passed"
         outcome = "no_values_found"
@@ -609,6 +681,7 @@ def assess_stage_yield(
         "field_coverage_ratio": round(coverage_ratio, 4),
         "extracted_total": extracted_total,
         "missing_total": missing_total,
+        "unresolved_total": unresolved_total,
     }
 
 
@@ -760,6 +833,7 @@ def build_paper_metadata_payload(
         "document": document_name,
         "extracted_fields": extracted,
         "missing_fields": missing,
+        "unresolved_fields": [],
         "quality_notes": ["paper_info was prefilled deterministically from retrieval/download metadata; no LLM call was used."],
         "metadata_handoff": {
             "source": source,
@@ -1032,10 +1106,13 @@ def sanitize_payload(payload: dict[str, Any], normalize_unicode: bool = False) -
         payload = normalize_strings_deep(payload)
     extracted = payload.get("extracted_fields")
     missing = payload.get("missing_fields")
+    unresolved = payload.get("unresolved_fields")
     if not isinstance(extracted, list):
         extracted = []
     if not isinstance(missing, list):
         missing = []
+    if not isinstance(unresolved, list):
+        unresolved = []
     clean_extracted = []
     moved_to_missing = []
     figure_quality_notes = []
@@ -1084,9 +1161,32 @@ def sanitize_payload(payload: dict[str, Any], normalize_unicode: bool = False) -
     if figure_quality_notes:
         payload.setdefault("quality_notes", []).extend(figure_quality_notes)
     clean_extracted = deduplicate_extracted_fields(clean_extracted)
-    clean_missing = reconcile_missing_fields(clean_extracted, [*missing, *moved_to_missing])
+    extracted_paths = {
+        str(item.get("field_path") or "").strip()
+        for item in clean_extracted
+        if isinstance(item, dict) and str(item.get("field_path") or "").strip()
+    }
+    clean_unresolved = []
+    unresolved_paths = set()
+    for item in unresolved:
+        if not isinstance(item, dict):
+            continue
+        field_path = str(item.get("field_path") or "").strip()
+        reason = str(item.get("unresolved_reason") or "").strip()
+        if not field_path or not reason or field_path in extracted_paths or field_path in unresolved_paths:
+            continue
+        item["field_path"] = field_path
+        item["decision_status"] = "unresolved"
+        clean_unresolved.append(item)
+        unresolved_paths.add(field_path)
+    clean_missing = [
+        item
+        for item in reconcile_missing_fields(clean_extracted, [*missing, *moved_to_missing])
+        if str(item.get("field_path") or "").strip() not in unresolved_paths
+    ]
     payload["extracted_fields"] = clean_extracted
     payload["missing_fields"] = clean_missing
+    payload["unresolved_fields"] = clean_unresolved
     return payload
 
 
@@ -1112,6 +1212,111 @@ def count_unicode_candidates(value: Any) -> int:
     return 0
 
 
+def stable_contract_version(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest().upper()
+
+
+def annotate_payload_lineage(
+    payload: dict[str, Any],
+    field_specs: list[dict[str, Any]],
+    *,
+    document_path: str,
+    stage_id: str,
+    model_version: str,
+) -> dict[str, Any]:
+    """Bind each decision to its literature source and executable field rule."""
+    specs_by_path = {
+        str(item.get("field_path") or ""): item
+        for item in field_specs
+        if isinstance(item, dict) and item.get("field_path")
+    }
+    prompt_version = stable_contract_version(
+        {
+            "task": "automated_materials_database_construction_from_scientific_literature",
+            "stage_id": stage_id,
+            "field_specs": field_specs,
+            "output_states": ["extracted", "missing", "unresolved"],
+        }
+    )
+    validator_version = "downstream-extraction-validator-v2"
+    decision_groups = (
+        ("extracted_fields", "extracted", "value"),
+        ("missing_fields", "missing", "missing_reason"),
+        ("unresolved_fields", "unresolved", "candidate_value"),
+    )
+    for group_name, decision_status, value_key in decision_groups:
+        for item in payload.get(group_name, []) or []:
+            if not isinstance(item, dict):
+                continue
+            field_path = str(item.get("field_path") or "")
+            spec = specs_by_path.get(field_path) or {}
+            field_rule_version = str(spec.get("field_rule_version") or "")
+            if not field_rule_version.startswith("sha256:"):
+                field_rule_version = stable_contract_version(spec or {"field_path": field_path})
+            item["decision_status"] = decision_status
+            identity_payload = {
+                "document_path": str(Path(document_path)),
+                "stage_id": stage_id,
+                "field_path": field_path,
+                "material_system": item.get("material_system"),
+                "sample_id": item.get("sample_id"),
+                "entity_ref": item.get("entity_ref"),
+                "source_hint": item.get("source_hint"),
+                "decision_status": decision_status,
+                "decision_value": item.get(value_key),
+            }
+            item["record_id"] = "record:" + hashlib.sha256(
+                json.dumps(identity_payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()[:24].upper()
+            item["lineage"] = {
+                "source_document": str(Path(document_path)),
+                "source_artifact_type": "parsed_literature_markdown",
+                "stage_id": stage_id,
+                "field_rule_id": spec.get("field_rule_id") or f"field.{safe_name(field_path).lower()}",
+                "field_rule_version": field_rule_version,
+                "prompt_version": prompt_version,
+                "model_version": model_version,
+                "validator_version": validator_version,
+            }
+
+    payload["task_contract"] = agent_protocol.materials_literature_task_contract()
+    payload["lineage_manifest"] = {
+        "contract_version": "materials-literature-lineage-v1",
+        "document_path": str(Path(document_path)),
+        "stage_id": stage_id,
+        "prompt_version": prompt_version,
+        "model_version": model_version,
+        "validator_version": validator_version,
+        "field_rule_versions": {
+            path: (spec.get("field_rule_version") or stable_contract_version(spec))
+            for path, spec in sorted(specs_by_path.items())
+        },
+    }
+    payload["protocol_envelope"] = agent_protocol.make_message(
+        sender="section_extraction_runner",
+        receiver="step9_supervisor",
+        phase=stage_id,
+        status="completed",
+        task_contract=payload["task_contract"],
+        payload_refs={
+            "document": str(Path(document_path)),
+            "stage_id": stage_id,
+            "lineage": "lineage_manifest",
+        },
+        decision={
+            "output_states": ["extracted", "missing", "unresolved"],
+            "field_decision_count": sum(
+                len(payload.get(group_name, []) or [])
+                for group_name in ("extracted_fields", "missing_fields", "unresolved_fields")
+            ),
+        },
+        produced_artifacts=[{"ref": "stage_payload"}],
+        next_route="extraction_eval",
+    )
+    return payload
+
+
 def validate_stage_payload(payload: dict[str, Any], normalize_unicode: bool = False) -> dict[str, Any]:
     payload = sanitize_payload(payload, normalize_unicode=normalize_unicode)
     if payload.get("error") or payload.get("raw_text"):
@@ -1122,14 +1327,23 @@ def validate_stage_payload(payload: dict[str, Any], normalize_unicode: bool = Fa
             "evidence_count": 0,
             "has_json": False,
             "has_evidence": False,
+            "protocol_valid": False,
+            "protocol_errors": ["payload was not successfully annotated"],
             "error": payload.get("error", "raw_text payload indicates an earlier parse failure"),
+            "error_type": payload.get("error_type") or classify_extraction_error(payload.get("error")),
+            "retryable_transport_error": (
+                payload.get("error_type") or classify_extraction_error(payload.get("error"))
+            ) in {"rate_limit", "transient_http", "transport_timeout"},
         }
     extracted = payload.get("extracted_fields")
     missing = payload.get("missing_fields")
+    unresolved = payload.get("unresolved_fields")
     if not isinstance(extracted, list):
         extracted = []
     if not isinstance(missing, list):
         missing = []
+    if not isinstance(unresolved, list):
+        unresolved = []
     evidence_count = 0
     null_like_count = 0
     unicode_candidate_count = 0
@@ -1149,22 +1363,161 @@ def validate_stage_payload(payload: dict[str, Any], normalize_unicode: bool = Fa
             null_like_count += 1
         if item.get("evidence_text"):
             evidence_count += 1
+    unresolved_evidence_count = sum(
+        1
+        for item in unresolved
+        if isinstance(item, dict) and str(item.get("evidence_text") or "").strip()
+    )
+    evidence_count += unresolved_evidence_count
     addressed_field_paths = sorted(
         {
             str(item.get("field_path") or "").strip()
-            for item in [*extracted, *missing]
+            for item in [*extracted, *missing, *unresolved]
             if isinstance(item, dict) and str(item.get("field_path") or "").strip()
         }
     )
+    protocol_errors = agent_protocol.validate_message(payload.get("protocol_envelope"))
     return {
         "extracted_count": len(extracted),
         "missing_count": len(missing),
+        "unresolved_count": len(unresolved),
         "null_like_count": null_like_count,
         "unicode_candidate_count": unicode_candidate_count,
         "evidence_count": evidence_count,
         "addressed_field_paths": addressed_field_paths,
         "has_json": True,
-        "has_evidence": evidence_count > 0 or len(extracted) == 0,
+        "has_evidence": evidence_count > 0 or (len(extracted) == 0 and len(unresolved) == 0),
+        "protocol_valid": not protocol_errors,
+        "protocol_errors": protocol_errors,
+    }
+
+
+def _selector_tokens(path: str) -> set[str]:
+    value = str(path or "").strip()
+    if not value:
+        return set()
+    path_obj = Path(value)
+    return {
+        value.casefold(),
+        str(path_obj).casefold(),
+        path_obj.name.casefold(),
+        path_obj.stem.casefold(),
+    }
+
+
+def build_selective_reprocess_scope(
+    workflow_plan: dict[str, Any],
+    prompt_output: dict[str, Any],
+    documents: list[str],
+    impact_manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    all_documents = [str(Path(path)) for path in documents]
+    all_stages = [
+        stage
+        for stage in workflow_plan.get("section_test_plan", [])
+        if isinstance(stage, dict)
+        and stage.get("stage_id")
+        and stage.get("stage_id") != "unicode_normalization"
+        and not str(stage.get("section_id", "")).startswith("postprocess.")
+    ]
+    all_stage_ids = [str(stage["stage_id"]) for stage in all_stages]
+    if not impact_manifest:
+        return {
+            "enabled": False,
+            "approved": True,
+            "errors": [],
+            "selected_documents": all_documents,
+            "selected_stage_ids": all_stage_ids,
+            "target_stage_ids": all_stage_ids,
+            "dependency_stage_ids": [],
+            "selected_field_paths_by_stage": {},
+            "requested_documents": [],
+            "requested_stage_ids": [],
+            "requested_field_paths": [],
+            "skipped_documents": [],
+            "skipped_stage_ids": [],
+        }
+
+    errors = []
+    approval = impact_manifest.get("supervisor_approval") or {}
+    approved = approval.get("status") == "approved"
+    if not approved:
+        errors.append("Impact manifest is not approved by impact_supervisor.")
+    if impact_manifest.get("task_type") != agent_protocol.materials_literature_task_contract()["task_type"]:
+        errors.append("Impact manifest task_type is outside automated materials-database construction.")
+    if impact_manifest.get("source_scope") != agent_protocol.materials_literature_task_contract()["source_scope"]:
+        errors.append("Impact manifest source_scope must be scientific_literature_only.")
+
+    requested_documents = sorted({str(value) for value in impact_manifest.get("affected_documents", []) if str(value).strip()})
+    requested_stage_ids = sorted({str(value) for value in impact_manifest.get("affected_stage_ids", []) if str(value).strip()})
+    requested_field_paths = sorted({str(value) for value in impact_manifest.get("affected_field_paths", []) if str(value).strip()})
+    requested_doc_tokens = set().union(*(_selector_tokens(value) for value in requested_documents)) if requested_documents else set()
+    selected_documents = [
+        document
+        for document in all_documents
+        if not requested_doc_tokens or _selector_tokens(document).intersection(requested_doc_tokens)
+    ]
+    if requested_documents and not selected_documents:
+        errors.append("No input literature document matches affected_documents.")
+
+    known_stage_ids = set(all_stage_ids)
+    target_stage_ids = {stage_id for stage_id in requested_stage_ids if stage_id in known_stage_ids}
+    unknown_stage_ids = sorted(set(requested_stage_ids) - known_stage_ids)
+    if unknown_stage_ids:
+        errors.append("Unknown affected_stage_ids: " + ", ".join(unknown_stage_ids))
+
+    selected_fields_by_stage: dict[str, list[str]] = {}
+    matched_fields = set()
+    if requested_field_paths:
+        requested_field_set = set(requested_field_paths)
+        for stage_id in all_stage_ids:
+            matched = sorted(
+                requested_field_set.intersection(
+                    spec.get("field_path")
+                    for spec in stage_field_specs(prompt_output, stage_id)
+                    if isinstance(spec, dict) and spec.get("field_path")
+                )
+            )
+            if matched:
+                selected_fields_by_stage[stage_id] = matched
+                target_stage_ids.add(stage_id)
+                matched_fields.update(matched)
+        unmatched_fields = sorted(set(requested_field_paths) - matched_fields)
+        if unmatched_fields:
+            errors.append("Unknown affected_field_paths: " + ", ".join(unmatched_fields))
+
+    if not requested_stage_ids and not requested_field_paths:
+        target_stage_ids.update(all_stage_ids)
+    if not target_stage_ids and impact_manifest.get("status") != "no_reprocessing_required":
+        errors.append("Impact manifest does not select any executable extraction stage.")
+
+    stage_by_id = {str(stage["stage_id"]): stage for stage in all_stages}
+    selected_stage_ids = set(target_stage_ids)
+    pending = list(target_stage_ids)
+    while pending:
+        stage_id = pending.pop()
+        for dependency in stage_by_id.get(stage_id, {}).get("depends_on", []) or []:
+            dependency = str(dependency)
+            if dependency in known_stage_ids and dependency not in selected_stage_ids:
+                selected_stage_ids.add(dependency)
+                pending.append(dependency)
+
+    ordered_selected_stages = [stage_id for stage_id in all_stage_ids if stage_id in selected_stage_ids]
+    dependency_stage_ids = [stage_id for stage_id in ordered_selected_stages if stage_id not in target_stage_ids]
+    return {
+        "enabled": True,
+        "approved": approved and not errors,
+        "errors": errors,
+        "selected_documents": selected_documents,
+        "selected_stage_ids": ordered_selected_stages,
+        "target_stage_ids": [stage_id for stage_id in all_stage_ids if stage_id in target_stage_ids],
+        "dependency_stage_ids": dependency_stage_ids,
+        "selected_field_paths_by_stage": selected_fields_by_stage,
+        "requested_documents": requested_documents,
+        "requested_stage_ids": requested_stage_ids,
+        "requested_field_paths": requested_field_paths,
+        "skipped_documents": [document for document in all_documents if document not in selected_documents],
+        "skipped_stage_ids": [stage_id for stage_id in all_stage_ids if stage_id not in selected_stage_ids],
     }
 
 
@@ -1177,41 +1530,105 @@ def run_extraction_bench(
     api_key: str,
     model: str,
     temperature: float = 0,
-    max_tokens: int = 4096,
+    max_tokens: int = 384000,
     output_dir: str = "step9_extraction_runs",
     max_documents: int = 4,
-    max_document_chars: int = 26000,
+    max_document_chars: int = 200000,
     max_fields_per_stage: int = 80,
+    max_workers: int = 4,
     paper_metadata_by_document: dict[str, dict[str, Any]] | None = None,
+    impact_manifest: dict[str, Any] | None = None,
+    run_identity: dict[str, Any] | None = None,
+    reuse_existing_outputs: bool = False,
 ) -> dict[str, Any]:
     run_dir = Path(output_dir)
+    if run_identity:
+        run_artifact_guard.assert_active_run(run_identity)
+        if run_dir.exists():
+            return {
+                "status": "clean_run_rejected",
+                "reason": (
+                    "The extraction run directory already exists. Start a new Step9 run with a new "
+                    "output namespace; existing document or batch outputs are never reused by an official run."
+                ),
+                "run_dir": str(run_dir),
+                "documents": [],
+                "selective_reprocess": {},
+                "section_results": [],
+                "run_identity": run_identity,
+            }
     run_dir.mkdir(parents=True, exist_ok=True)
-    selected_docs = [str(Path(path)) for path in documents[:max_documents]]
+    candidate_docs = [str(Path(path)) for path in documents[:max_documents]]
+    selective_scope = build_selective_reprocess_scope(
+        workflow_plan,
+        prompt_output,
+        candidate_docs,
+        impact_manifest,
+    )
+    if selective_scope["errors"]:
+        return {
+            "status": "selection_rejected",
+            "reason": "Selective reprocessing was rejected before extraction.",
+            "run_dir": str(run_dir),
+            "documents": [],
+            "selective_reprocess": selective_scope,
+            "section_results": [],
+        }
+    if selective_scope["enabled"] and (impact_manifest or {}).get("status") == "no_reprocessing_required":
+        return {
+            "status": "completed_noop",
+            "reason": "The approved impact manifest requires no historical reprocessing.",
+            "run_dir": str(run_dir),
+            "documents": [],
+            "selective_reprocess": selective_scope,
+            "section_results": [],
+        }
+    selected_docs = selective_scope["selected_documents"]
+    selected_stage_ids = set(selective_scope["selected_stage_ids"])
+    target_stage_ids = set(selective_scope["target_stage_ids"])
+    selected_fields_by_stage = selective_scope["selected_field_paths_by_stage"]
+    worker_limit = max(1, int(max_workers or 1))
     section_results = []
     dependency_outputs: dict[str, Any] = {}
     paper_metadata_by_document = paper_metadata_by_document or {}
     metadata_prefilled_documents = set()
 
+    def bind_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
+        if run_identity:
+            payload["run_identity"] = dict(run_identity)
+        return payload
+
     for stage in workflow_plan.get("section_test_plan", []):
         stage_id = stage["stage_id"]
         if stage_id == "unicode_normalization" or str(stage.get("section_id", "")).startswith("postprocess."):
+            continue
+        if stage_id not in selected_stage_ids:
             continue
         stage_dir = run_dir / safe_name(stage_id)
         stage_dir.mkdir(parents=True, exist_ok=True)
         stage_policy = (workflow_plan.get("stage_batching_policy") or {}).get(stage_id) or {}
         stage_max_fields = int(stage_policy.get("max_fields_per_call") or max_fields_per_stage)
-        all_fields = stage_fields(prompt_output, stage_id)
+        all_field_specs = stage_field_specs(prompt_output, stage_id)
+        if stage_id in selected_fields_by_stage:
+            selected_field_paths = set(selected_fields_by_stage[stage_id])
+            all_field_specs = [
+                spec for spec in all_field_specs if spec.get("field_path") in selected_field_paths
+            ]
+        all_fields = [item["field_path"] for item in all_field_specs]
+        specs_by_path = {item["field_path"]: item for item in all_field_specs}
         if stage_max_fields and len(all_fields) > stage_max_fields:
             field_batches = chunk_fields(all_fields, stage_max_fields)
             fields = all_fields
         else:
             fields = all_fields
             field_batches = [fields]
-        doc_results = []
-        failed_docs = []
-        metadata_missing_docs = []
+        effective_workers = (
+            1
+            if stage_id == "paper_info" or len(selected_docs) <= 1
+            else min(worker_limit, len(selected_docs))
+        )
 
-        for doc_path in selected_docs:
+        def process_document(doc_path: str) -> dict[str, Any]:
             doc_name = Path(doc_path).name
             output_file = stage_dir / f"{safe_name(Path(doc_path).stem)}.json"
             metadata_record = metadata_for_document(paper_metadata_by_document, doc_path)
@@ -1222,14 +1639,22 @@ def run_extraction_bench(
                         "No upstream metadata record matched this document; paper_info was not extracted from PDF text."
                     )
                 payload = sanitize_payload(payload, normalize_unicode=False)
+                payload = annotate_payload_lineage(
+                    payload,
+                    all_field_specs,
+                    document_path=doc_path,
+                    stage_id=stage_id,
+                    model_version="metadata_handoff",
+                )
+                payload = bind_run_identity(payload)
                 checks = validate_stage_payload(payload, normalize_unicode=False)
-                output_file.write_text(json_dumps(payload), encoding="utf-8")
-                if metadata_record:
-                    metadata_prefilled_documents.add(doc_name)
-                else:
-                    metadata_missing_docs.append(doc_name)
-                doc_results.append(
-                    {
+                run_artifact_guard.atomic_write_json(
+                    output_file,
+                    payload,
+                    run_identity=run_identity,
+                )
+                return {
+                    "item": {
                         "document": doc_name,
                         "status": (
                             "passed"
@@ -1241,27 +1666,43 @@ def run_extraction_bench(
                         "checks": checks,
                         "output_file": str(output_file),
                         "metadata_prefilled": bool(metadata_record),
-                    }
-                )
-                continue
-            if output_file.exists():
+                    },
+                    "metadata_prefilled": bool(metadata_record),
+                    "metadata_missing": not bool(metadata_record),
+                    "failed": not checks["has_json"],
+                }
+            force_targeted_output = selective_scope["enabled"] and stage_id in target_stage_ids
+            if reuse_existing_outputs and output_file.exists() and not force_targeted_output:
                 try:
                     payload = json.loads(output_file.read_text(encoding="utf-8"))
                     payload = sanitize_payload(payload, normalize_unicode=False)
+                    payload = annotate_payload_lineage(
+                        payload,
+                        all_field_specs,
+                        document_path=doc_path,
+                        stage_id=stage_id,
+                        model_version=model,
+                    )
                     checks = validate_stage_payload(payload, normalize_unicode=False)
                     doc_status = "passed" if checks["has_json"] else "invalid_json"
                     if doc_status == "passed":
-                        output_file.write_text(json_dumps(payload), encoding="utf-8")
-                        doc_results.append(
-                            {
+                        run_artifact_guard.atomic_write_json(
+                            output_file,
+                            payload,
+                            run_identity=run_identity,
+                        )
+                        return {
+                            "item": {
                                 "document": doc_name,
                                 "status": doc_status,
                                 "checks": checks,
                                 "output_file": str(output_file),
                                 "resumed": True,
-                            }
-                        )
-                        continue
+                            },
+                            "metadata_prefilled": False,
+                            "metadata_missing": False,
+                            "failed": False,
+                        }
                 except json.JSONDecodeError:
                     pass
             document_text = read_text(doc_path, max_document_chars)
@@ -1274,8 +1715,14 @@ def run_extraction_bench(
             if len(field_batches) > 1:
                 batch_dir.mkdir(parents=True, exist_ok=True)
             for batch_index, batch_fields in enumerate(field_batches):
+                batch_field_specs = [specs_by_path[field_path] for field_path in batch_fields]
                 batch_output_file = batch_dir / f"batch_{batch_index + 1:02d}.json"
-                if len(field_batches) > 1 and batch_output_file.exists():
+                if (
+                    reuse_existing_outputs
+                    and len(field_batches) > 1
+                    and batch_output_file.exists()
+                    and not force_targeted_output
+                ):
                     try:
                         batch_payload = json.loads(batch_output_file.read_text(encoding="utf-8"))
                         batch_payload = sanitize_payload(batch_payload, normalize_unicode=False)
@@ -1285,7 +1732,15 @@ def run_extraction_bench(
                     except json.JSONDecodeError:
                         pass
 
-                prompt = build_stage_prompt(document_text, doc_name, stage, batch_fields, dependency_context)
+                prompt = build_stage_prompt(
+                    document_text,
+                    doc_name,
+                    stage,
+                    batch_fields,
+                    dependency_context,
+                    batch_field_specs,
+                )
+                raw_text = ""
                 try:
                     raw_text = prompt_agent.litellm_chat(
                         base_url=base_url,
@@ -1302,20 +1757,37 @@ def run_extraction_bench(
                         "stage_id": stage.get("stage_id"),
                         "section_id": stage.get("section_id"),
                         "document": doc_name,
-                        "raw_text": locals().get("raw_text", ""),
+                        "raw_text": raw_text,
                         "error": str(exc),
+                        "error_type": classify_extraction_error(exc),
                     }
+                batch_payload = bind_run_identity(batch_payload)
                 if len(field_batches) > 1:
-                    batch_output_file.write_text(json_dumps(batch_payload), encoding="utf-8")
+                    run_artifact_guard.atomic_write_json(
+                        batch_output_file,
+                        batch_payload,
+                        run_identity=run_identity,
+                    )
                 batch_payloads.append(batch_payload)
 
             payload = merge_stage_payloads(batch_payloads, stage, doc_name, field_batches)
             payload = sanitize_payload(payload, normalize_unicode=False)
+            payload = annotate_payload_lineage(
+                payload,
+                all_field_specs,
+                document_path=doc_path,
+                stage_id=stage_id,
+                model_version=model,
+            )
+            payload = bind_run_identity(payload)
             checks = validate_stage_payload(payload, normalize_unicode=False)
-            doc_status = "passed" if checks["has_json"] else "invalid_json"
-            if doc_status == "invalid_json":
-                failed_docs.append(doc_name)
-
+            doc_status = (
+                "passed"
+                if checks["has_json"]
+                else "transport_error"
+                if checks.get("retryable_transport_error")
+                else "invalid_json"
+            )
             item = {
                 "document": doc_name,
                 "status": doc_status,
@@ -1324,18 +1796,56 @@ def run_extraction_bench(
             }
             if len(field_batches) > 1:
                 item["batch_count"] = len(field_batches)
-            Path(item["output_file"]).write_text(json_dumps(payload), encoding="utf-8")
-            doc_results.append(item)
+            run_artifact_guard.atomic_write_json(
+                item["output_file"],
+                payload,
+                run_identity=run_identity,
+            )
+            return {
+                "item": item,
+                "metadata_prefilled": False,
+                "metadata_missing": False,
+                "failed": doc_status in {"invalid_json", "transport_error"},
+            }
+
+        if effective_workers == 1:
+            document_outcomes = [process_document(doc_path) for doc_path in selected_docs]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=effective_workers,
+                thread_name_prefix=f"step9-{safe_name(stage_id)[:24]}",
+            ) as executor:
+                # executor.map preserves source-document order while API calls run concurrently.
+                document_outcomes = list(executor.map(process_document, selected_docs))
+
+        doc_results = [outcome["item"] for outcome in document_outcomes]
+        failed_docs = [
+            outcome["item"]["document"] for outcome in document_outcomes if outcome["failed"]
+        ]
+        metadata_missing_docs = [
+            outcome["item"]["document"]
+            for outcome in document_outcomes
+            if outcome["metadata_missing"]
+        ]
+        metadata_prefilled_documents.update(
+            outcome["item"]["document"]
+            for outcome in document_outcomes
+            if outcome["metadata_prefilled"]
+        )
 
         document_checks = [item.get("checks") or {} for item in doc_results]
         yield_assessment = assess_stage_yield(document_checks, fields, stage_id=stage_id)
         extracted_total = yield_assessment["extracted_total"]
         missing_total = yield_assessment["missing_total"]
+        unresolved_total = yield_assessment["unresolved_total"]
         null_like_total = sum((item.get("checks") or {}).get("null_like_count", 0) for item in doc_results)
         unicode_candidate_total = sum((item.get("checks") or {}).get("unicode_candidate_count", 0) for item in doc_results)
         invalid_count = sum(1 for item in doc_results if item.get("status") == "invalid_json")
+        transport_error_count = sum(1 for item in doc_results if item.get("status") == "transport_error")
         stage_status = "passed"
-        if invalid_count:
+        if transport_error_count:
+            stage_status = "transport_error"
+        elif invalid_count:
             stage_status = "invalid_json"
         elif stage_id == "paper_info" and metadata_missing_docs:
             stage_status = "metadata_missing"
@@ -1354,6 +1864,12 @@ def run_extraction_bench(
                 "batch_count": len(field_batches),
                 "max_fields_per_call": stage_max_fields,
             },
+            "parallelism": {
+                "strategy": "bounded_document_thread_pool",
+                "configured_max_workers": worker_limit,
+                "effective_workers": effective_workers,
+                "deterministic_result_order": True,
+            },
             "document_results": doc_results,
             "checks": [
                 "dependency_inputs_available",
@@ -1364,8 +1880,10 @@ def run_extraction_bench(
             "summary": {
                 "documents": len(doc_results),
                 "invalid_json": invalid_count,
+                "transport_errors": transport_error_count,
                 "extracted_total": extracted_total,
                 "missing_total": missing_total,
+                "unresolved_total": unresolved_total,
                 "field_coverage_ratio": yield_assessment["field_coverage_ratio"],
                 "extraction_outcome": yield_assessment["extraction_outcome"],
                 "null_like_total": null_like_total,
@@ -1390,9 +1908,15 @@ def run_extraction_bench(
         "reason": "Live section-wise extraction bench completed.",
         "run_dir": str(run_dir),
         "documents": selected_docs,
+        "selective_reprocess": selective_scope,
         "paper_metadata_handoff": {
             "available_records": len(paper_metadata_by_document),
             "prefilled_documents": sorted(metadata_prefilled_documents),
         },
+        "parallelism": {
+            "strategy": "stages_in_dependency_order_documents_concurrent",
+            "configured_max_workers": worker_limit,
+        },
         "section_results": section_results,
+        "run_identity": run_identity or {},
     }
