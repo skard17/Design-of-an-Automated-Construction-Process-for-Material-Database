@@ -600,6 +600,13 @@ def load_runtime_credentials(
 
 
 def prepare_campaign(args: argparse.Namespace) -> dict[str, Any]:
+    knowledge_source = str(getattr(args, "domain_knowledge_pack", "") or "")
+    if knowledge_source:
+        import task_domain_knowledge
+        task_domain_knowledge.load_for_design(knowledge_source, {
+            "database_goal": TASK["objective"], "discipline": TASK["discipline"],
+            "query_requirements": [TASK["query_requirements"]],
+        })
     output_root = Path(args.output_root).resolve(strict=False)
     if output_root.exists():
         raise FileExistsError(
@@ -680,6 +687,11 @@ def prepare_campaign(args: argparse.Namespace) -> dict[str, Any]:
             bool(version["structured_protocol"]),
             care=bool(version["care"]),
         )
+        knowledge_input = None
+        if knowledge_source:
+            knowledge_path = version_root / "inputs" / "domain_knowledge_pack.json"
+            shutil.copyfile(knowledge_source, knowledge_path)
+            knowledge_input = {"path": str(knowledge_path), "sha256": hashlib.sha256(knowledge_path.read_bytes()).hexdigest()}
         version_manifest = {
             "version": version,
             "campaign_started_at": campaign_started_at,
@@ -690,6 +702,7 @@ def prepare_campaign(args: argparse.Namespace) -> dict[str, Any]:
             "metadata_count": len(copied_metadata),
             "expert_advice": str(advice_path),
             "expert_run_identity": advice_identity,
+            "domain_knowledge": knowledge_input,
             "forbidden_generation_inputs": [
                 "manual schema",
                 "core mapping",
@@ -709,6 +722,7 @@ def prepare_campaign(args: argparse.Namespace) -> dict[str, Any]:
                 "advice_path": str(advice_path),
                 "structured_protocol": bool(version["structured_protocol"]),
                 "care": bool(version["care"]),
+                "domain_knowledge": knowledge_input,
             }
         )
 
@@ -793,6 +807,12 @@ def build_step8_command(
         f"{record['version_id']}-parallel-step8",
     ]
     command.extend(["--human-advice-path", record["advice_path"]])
+    knowledge = record.get("domain_knowledge")
+    if knowledge:
+        path = Path(knowledge["path"]).resolve(strict=True)
+        if not path.is_relative_to(version_root.resolve() / "inputs") or hashlib.sha256(path.read_bytes()).hexdigest() != knowledge["sha256"]:
+            raise ValueError("Frozen domain knowledge changed or escaped campaign inputs")
+        command.extend(["--domain-knowledge-pack", str(path)])
     if record["structured_protocol"]:
         command.append("--structured-protocol")
     return command
@@ -1066,6 +1086,11 @@ def load_prepared_campaign(output_root: Path) -> dict[str, Any]:
             )
         )
         advice_path = Path(record["advice_path"]).resolve(strict=True)
+        knowledge = record.get("domain_knowledge")
+        if knowledge:
+            path = Path(knowledge["path"]).resolve(strict=True)
+            if not path.is_relative_to(version_root / "inputs") or hashlib.sha256(path.read_bytes()).hexdigest() != knowledge["sha256"]:
+                raise ValueError("Prepared domain knowledge input changed")
         try:
             advice_path.relative_to(version_root / "inputs")
         except ValueError as exc:
@@ -1078,6 +1103,7 @@ def load_prepared_campaign(output_root: Path) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--domain-knowledge-pack", default="")
     parser.add_argument("--corpus-dir", required=True)
     parser.add_argument("--metadata-dir", required=True)
     parser.add_argument("--output-root", required=True)

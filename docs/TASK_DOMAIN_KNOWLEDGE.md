@@ -65,6 +65,19 @@ reading.
 
 ## Remaining Evaluation
 
+## Automatic Step8 Entry
+
+`code/run_knowledge_augmented_step8.py` composes concept research and isolated
+campaign preparation/launch. It accepts the existing campaign runner arguments
+plus `--research-output`, `--research-provider`, `--research-approved-host` and
+`--research-max-concepts`. Incomplete knowledge stops at a review gate by default.
+`--allow-partial-knowledge` is an explicit experimental override, not evidence
+that the research is complete. Each campaign input manifest records the frozen
+knowledge path and SHA-256; preparation and launch reject tampering. The control
+uses the ordinary runner with no `--domain-knowledge-pack`.
+
+## Controlled Evaluation
+
 Run a fresh complete task research campaign after selecting/configuring an
 external provider and trusted source hosts. Review unresolved concepts, source
 relevance, quote entailment and applicability. Then freeze the pack and compare
